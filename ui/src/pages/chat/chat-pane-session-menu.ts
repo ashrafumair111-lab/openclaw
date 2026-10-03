@@ -76,7 +76,7 @@ export abstract class ChatPaneSessionMenu extends ChatPaneContext {
     }
     // A browser-local opt-out must also stop consuming the chord: returning false
     // leaves ⌘/Ctrl+Shift+A unhandled so the browser keeps its own shortcut.
-    if (this.state?.settings.archiveShortcutEnabled === false) {
+    if (this.state?.settings?.archiveShortcutEnabled === false) {
       return false;
     }
     const state = this.state;

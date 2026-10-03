@@ -522,9 +522,10 @@ export function createTestChatPane(params: {
     requestUpdate,
     sessionKey: "agent:main:current",
     sessions: context.sessions,
-    // Real display settings so pref-driven pane behavior (chat send/archive
-    // shortcuts) matches production instead of reading undefined.
-    settings: loadSettings(context.gateway.connection.gatewayUrl),
+    // Defaults only: an empty settings object makes pref reads (chat send/archive
+    // shortcuts) safe without seeding real stored preferences, which would leak
+    // this host's settings into unrelated pane timing assertions.
+    settings: {},
     sessionsError: null,
     sessionsLoading: false,
     sidebarContent: null,

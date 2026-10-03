@@ -646,7 +646,7 @@ export abstract class ChatPaneHeader extends ChatPaneDiscussion {
                 this.active &&
                 this.presented &&
                 !this.onboarding &&
-                this.state?.settings.archiveShortcutEnabled !== false
+                this.state?.settings?.archiveShortcutEnabled !== false
               }
               .deleteAllowed=${deleteAllowed}
               .onOpen=${this.onHeaderMenuOpen}
