@@ -95,19 +95,29 @@ export function resolveKeyboardShortcutSections(
   options: { archiveShortcutEnabled?: boolean } = {},
 ): readonly KeyboardShortcutSection[] {
   const archiveShortcutEnabled = options.archiveShortcutEnabled !== false;
-  if (sendShortcut !== "modifier-enter" && archiveShortcutEnabled) {
-    return KEYBOARD_SHORTCUT_SECTIONS;
+  // Only the composer's own preference may relabel the Send hints; an Archive
+  // opt-out hides its row but must never rewrite chords that still fire as Enter.
+  const usesModifiedEnter = sendShortcut === "modifier-enter";
+  if (usesModifiedEnter) {
+    return KEYBOARD_SHORTCUT_SECTIONS.map((section) =>
+      keyboardShortcutSection(
+        section.id,
+        section.entries
+          .filter((entry) => archiveShortcutEnabled || !ARCHIVE_PREFERENCE_ENTRY_IDS.has(entry.id))
+          .map((entry) =>
+            SEND_PREFERENCE_ENTRY_IDS.has(entry.id)
+              ? keyboardShortcutEntry(entry.id, KEYBOARD_SHORTCUT_COMBOS.modifiedEnter)
+              : entry,
+          ),
+      ),
+    );
   }
   return KEYBOARD_SHORTCUT_SECTIONS.map((section) =>
     keyboardShortcutSection(
       section.id,
-      section.entries
-        .filter((entry) => archiveShortcutEnabled || !ARCHIVE_PREFERENCE_ENTRY_IDS.has(entry.id))
-        .map((entry) =>
-          SEND_PREFERENCE_ENTRY_IDS.has(entry.id)
-            ? keyboardShortcutEntry(entry.id, KEYBOARD_SHORTCUT_COMBOS.modifiedEnter)
-            : entry,
-        ),
+      section.entries.filter(
+        (entry) => archiveShortcutEnabled || !ARCHIVE_PREFERENCE_ENTRY_IDS.has(entry.id),
+      ),
     ),
   );
 }
