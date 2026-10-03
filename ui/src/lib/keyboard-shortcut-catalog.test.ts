@@ -269,6 +269,25 @@ describe("keyboard shortcut catalog presentation", () => {
     expect(chatEntryIds({ archiveShortcutEnabled: false })).not.toContain("archiveSession");
   });
 
+  it("keeps the Send hints truthful for both composer preferences with Archive disabled", () => {
+    const sendChords = (sendShortcut: "enter" | "modifier-enter") =>
+      resolveKeyboardShortcutSections(sendShortcut, { archiveShortcutEnabled: false })
+        .flatMap((section) => section.entries)
+        .filter((entry) => entry.id === "startNewSession" || entry.id === "sendMessage")
+        .map((entry) => [entry.id, entry.combos] as const);
+
+    // Enter stays the runtime send key, so the hints must keep showing plain Enter
+    // even though the Archive opt-out takes the mapper's non-fast path.
+    expect(sendChords("enter")).toEqual([
+      ["startNewSession", [KEYBOARD_SHORTCUT_COMBOS.sendMessage]],
+      ["sendMessage", [KEYBOARD_SHORTCUT_COMBOS.sendMessage]],
+    ]);
+    expect(sendChords("modifier-enter")).toEqual([
+      ["startNewSession", [KEYBOARD_SHORTCUT_COMBOS.modifiedEnter]],
+      ["sendMessage", [KEYBOARD_SHORTCUT_COMBOS.modifiedEnter]],
+    ]);
+  });
+
   it("gives every section and shortcut a resolvable label and at least one real chord", () => {
     for (const section of resolveKeyboardShortcutSections()) {
       expect(t(section.label), section.label).not.toBe(section.label);
