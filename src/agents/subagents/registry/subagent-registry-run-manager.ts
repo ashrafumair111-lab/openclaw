@@ -38,8 +38,6 @@ import type { SubagentManagerOptions } from "./subagent-registry-run-wait.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import { isSameSubagentRunOwner } from "./subagent-run-generation.js";
 
-export { preserveSubagentRunForRestart } from "./subagent-registry-run-wait.js";
-
 const log = createSubsystemLogger("agents/subagent-registry");
 
 class SubagentRunManager extends SubagentLaunchManager {
@@ -353,9 +351,7 @@ class SubagentRunManager extends SubagentLaunchManager {
               entry.cleanupHandled = true;
               entry.cleanupCompletedAt = existingKillReconciliation
                 ? (entry.cleanupCompletedAt ?? endedAt)
-                : wasKilledLifecycle
-                  ? endedAt
-                  : now;
+                : now;
               entry.suppressAnnounceReason = "killed";
               entry.pauseReason = undefined;
               entry.killIntent = undefined;

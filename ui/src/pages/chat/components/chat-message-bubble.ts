@@ -64,7 +64,7 @@ import {
 import { isSentPastedTextAttachment } from "./chat-pasted-text.ts";
 import { renderReplyLine, type ReplyLine } from "./chat-reply-attribution.ts";
 import { isSentCommentAttachment } from "./chat-sent-comments.ts";
-import type { SidebarContent } from "./chat-sidebar.ts";
+import type { SidebarContent } from "./chat-sidebar-content-types.ts";
 import {
   renderToolApprovalReviews,
   renderToolCard,
@@ -224,7 +224,6 @@ export function renderGroupedMessage(
     entryRef?: (element?: Element) => void;
     /** This message's own "Replying to" line, drawn inside the bubble. */
     replyLine?: ReplyLine;
-    onResolveReply?: (replyToId: string) => void;
     onOpenReply?: (replyToId: string) => void;
     replyNavigationId?: string | null;
   },
