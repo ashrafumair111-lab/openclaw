@@ -64,6 +64,9 @@ type AppearancePreferences = Required<
     | "chatShowTaskProgress"
     | "chatCollapseTaskProgress"
     | "showAdvancedSettings"
+    | "lobsterPetVisits"
+    | "sessionDeleteConfirm"
+    | "lobsterPetSounds"
     | "chatSendShortcut"
     | "catalogOpenTarget"
     | "composerHoldToRecord"
@@ -71,7 +74,17 @@ type AppearancePreferences = Required<
 > &
   Pick<UiSettings, "chatMessageMaxWidth" | "chatFollowUpMode">;
 
-export type ConfigProps = AppearancePreferences & {
+export type ConfigProps = Omit<
+  AppearancePreferences,
+  "lobsterPetVisits" | "sessionDeleteConfirm" | "lobsterPetSounds"
+> & {
+  lobsterPetVisits?: boolean;
+  setLobsterPetVisits?: (enabled: boolean) => void;
+  sessionDeleteConfirm?: boolean;
+  setSessionDeleteConfirm?: (enabled: boolean) => void;
+  lobsterPetSounds?: boolean;
+  setLobsterPetSounds?: (enabled: boolean) => void;
+
   onAppearanceChange: (patch: Partial<AppearancePreferences>) => void;
   raw: string;
   originalRaw: string;
@@ -173,15 +186,6 @@ export type ConfigProps = AppearancePreferences & {
   sessionObserverDisabled?: boolean;
   setSessionObserverEnabled?: (enabled: boolean) => void;
   setSessionObserverUtilityModel?: (selection: SessionObserverModelSelection) => void;
-
-  // Optional properties for tests and backward compatibility
-  lobsterPetVisits?: boolean;
-  setLobsterPetVisits?: (enabled: boolean) => void;
-  sessionDeleteConfirm?: boolean;
-  setSessionDeleteConfirm?: (enabled: boolean) => void;
-  lobsterPetSounds?: boolean;
-  setLobsterPetSounds?: (enabled: boolean) => void;
-
   archiveShortcutEnabled?: boolean;
   setArchiveShortcutEnabled?: (enabled: boolean) => void;
   lobsterdexHref?: string;
