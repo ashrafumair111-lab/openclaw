@@ -378,24 +378,24 @@ export function renderLobsterPetSection(props: ConfigProps) {
         ${renderSettingsToggleRow({
           title: t("quickSettings.appearance.lobsterVisits"),
           description: html`${t(
-              lobsterPetVisits
+              (lobsterPetVisits ?? false)
                 ? "quickSettings.appearance.lobsterVisitsOn"
                 : "quickSettings.appearance.lobsterVisitsOff",
             )}<br />
             ${lobsterVisitsDefaultDescription}
             ${t("quickSettings.personal.browserOnly")}${themeHiddenDescription}`,
-          checked: lobsterPetVisits,
+          checked: lobsterPetVisits ?? false,
           onChange: (enabled) => props.onAppearanceChange({ lobsterPetVisits: enabled }),
         })}
         ${renderSettingsToggleRow({
           title: t("quickSettings.appearance.lobsterSounds"),
           description: html`${t(
-              lobsterPetSounds
+              (lobsterPetSounds ?? false)
                 ? "quickSettings.appearance.lobsterSoundsOn"
                 : "quickSettings.appearance.lobsterSoundsOff",
             )}<br />
             ${lobsterSoundsDefaultDescription} ${t("quickSettings.personal.browserOnly")}`,
-          checked: lobsterPetSounds,
+          checked: lobsterPetSounds ?? false,
           onChange: (enabled) => props.onAppearanceChange({ lobsterPetSounds: enabled }),
           onAct: (enabled) => {
             if (enabled) {
@@ -491,7 +491,7 @@ export function renderSidebarPreferencesSection(props: ConfigProps) {
   );
   // The delete dialog's "Don't ask me again" writes this off; this row is where
   // the operator turns it back on, so it has to stay next to the session prefs.
-  const sessionDeleteConfirm = props.sessionDeleteConfirm;
+  const sessionDeleteConfirm = props.sessionDeleteConfirm ?? false;
   const deleteConfirmDefaultDescription = renderSettingsDefaultDescription(
     t("common.enabled"),
     sessionDeleteConfirm !== UI_APPEARANCE_DEFAULTS.sessionDeleteConfirm,
@@ -514,7 +514,7 @@ export function renderSidebarPreferencesSection(props: ConfigProps) {
           title: t("configView.sidebarPrefs.deleteConfirm"),
           description: html`${t("configView.sidebarPrefs.deleteConfirmHint")}<br />
             ${deleteConfirmDefaultDescription} ${t("quickSettings.personal.browserOnly")}`,
-          checked: sessionDeleteConfirm,
+          checked: sessionDeleteConfirm ?? false,
           onChange: (enabled) => props.onAppearanceChange({ sessionDeleteConfirm: enabled }),
         })}
       </div>

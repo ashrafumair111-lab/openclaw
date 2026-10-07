@@ -74,17 +74,7 @@ type AppearancePreferences = Required<
 > &
   Pick<UiSettings, "chatMessageMaxWidth" | "chatFollowUpMode">;
 
-export type ConfigProps = Omit<
-  AppearancePreferences,
-  "lobsterPetVisits" | "sessionDeleteConfirm" | "lobsterPetSounds"
-> & {
-  lobsterPetVisits?: boolean;
-  setLobsterPetVisits?: (enabled: boolean) => void;
-  sessionDeleteConfirm?: boolean;
-  setSessionDeleteConfirm?: (enabled: boolean) => void;
-  lobsterPetSounds?: boolean;
-  setLobsterPetSounds?: (enabled: boolean) => void;
-
+export type ConfigProps = AppearancePreferences & {
   onAppearanceChange: (patch: Partial<AppearancePreferences>) => void;
   raw: string;
   originalRaw: string;
@@ -186,6 +176,12 @@ export type ConfigProps = Omit<
   sessionObserverDisabled?: boolean;
   setSessionObserverEnabled?: (enabled: boolean) => void;
   setSessionObserverUtilityModel?: (selection: SessionObserverModelSelection) => void;
+
+  // Only the setters are optional so tests don't break when omitting them
+  setLobsterPetVisits?: (enabled: boolean) => void;
+  setSessionDeleteConfirm?: (enabled: boolean) => void;
+  setLobsterPetSounds?: (enabled: boolean) => void;
+
   archiveShortcutEnabled?: boolean;
   setArchiveShortcutEnabled?: (enabled: boolean) => void;
   lobsterdexHref?: string;
