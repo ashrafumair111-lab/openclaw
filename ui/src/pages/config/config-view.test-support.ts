@@ -4,6 +4,7 @@ import type { ThemeMode, ThemeName } from "../../app/theme.ts";
 import { createConfigViewState, renderConfig, type ConfigProps } from "./view.ts";
 
 export const baseProps = () => ({
+  onAppearanceChange: vi.fn(),
   raw: "{\n}\n",
   originalRaw: "{\n}\n",
   valid: true,
@@ -76,28 +77,20 @@ export const baseProps = () => ({
   textScaleOverridden: false,
   setTextScale: vi.fn(),
   sidebarLiveActivity: true,
-  setSidebarLiveActivity: vi.fn(),
   hiddenSessionCatalogIds: new Set<string>(),
   hiddenSessionCatalogLabels: new Map<string, string>(),
   setSessionCatalogHidden: vi.fn(),
   openLinksExternally: false,
-  setOpenLinksExternally: vi.fn(),
   composerHoldToRecord: true,
-  setComposerHoldToRecord: vi.fn(),
   lobsterPetVisits: true,
-  setLobsterPetVisits: vi.fn(),
   lobsterPetSounds: false,
-  setLobsterPetSounds: vi.fn(),
   sessionDeleteConfirm: true,
-  setSessionDeleteConfirm: vi.fn(),
+  terminalFontFamily: undefined,
+  setTerminalFontFamily: vi.fn(),
   chatMessageMaxWidth: undefined,
-  setChatMessageMaxWidth: vi.fn(),
   chatShowTaskProgress: true,
-  setChatShowTaskProgress: vi.fn(),
   chatCollapseTaskProgress: false,
-  setChatCollapseTaskProgress: vi.fn(),
   showAdvancedSettings: false,
-  setShowAdvancedSettings: vi.fn(),
   chatSendShortcut: "enter" as const,
   chatSendShortcutOverridden: false,
   chatSendShortcutProvenance: "default" as const,
@@ -109,10 +102,8 @@ export const baseProps = () => ({
   chatFollowUpModeOverridden: false,
   chatFollowUpModeProvenance: "default" as const,
   serverQueueMode: "steer" as const,
-  setChatFollowUpMode: vi.fn(),
   resetChatFollowUpMode: vi.fn(),
   catalogOpenTarget: "viewer" as const,
-  setCatalogOpenTarget: vi.fn(),
   gatewayUrl: "",
   assistantName: "OpenClaw",
 });
@@ -136,4 +127,12 @@ export function renderConfigView(overrides: Partial<ConfigProps> = {}): {
     );
   rerender();
   return { container, props };
+}
+
+export function renderAppearance(overrides: Partial<ConfigProps> = {}) {
+  return renderConfigView({
+    activeSection: "__appearance__",
+    includeSections: ["__appearance__"],
+    ...overrides,
+  });
 }

@@ -18,7 +18,7 @@ import { formatErrorMessage } from "../../../infra/errors.js";
 import { resolveEventSessionRoutingPolicy } from "../../../infra/event-session-routing.js";
 import {
   getSessionBindingService,
-  isSessionBindingError,
+  listSessionBindingsBySessionAsync,
   type SessionBindingRecord,
 } from "../../../infra/outbound/session-binding-service.js";
 import { getGlobalHookRunner } from "../../../plugins/hook-runner-global.js";
@@ -36,11 +36,7 @@ import {
   inheritedToolAllowPatch,
   inheritedToolDenyPatch,
 } from "../../inherited-tool-deny.js";
-import {
-  runSpawnPipeline,
-  summarizeSpawnError,
-  type SpawnBackendAdapter,
-} from "../../spawn-pipeline.js";
+import { runSpawnPipeline, type SpawnBackendAdapter } from "../../spawn-pipeline.js";
 import {
   mintSpawnSessionKey,
   prepareSpawnThreadBinding,
@@ -50,6 +46,7 @@ import {
 } from "../../spawn-plan.js";
 import { resolveSpawnedWorkspaceInheritance } from "../../spawned-context.js";
 import type { PreparedSessionPermissionPolicy } from "../../tool-fs-policy.types.js";
+import { prepareSubagentSessionListReadCache } from "../registry/subagent-registry-state.js";
 import { countUntrackedActiveAcpRunsForOwner } from "./acp-spawn-admission.js";
 import {
   resolveAcpSpawnBootstrapDeliveryPlan,
@@ -72,7 +69,11 @@ import {
   shouldStreamAcpSpawnToParent,
   validateAcpResumeSessionOwnership,
 } from "./acp-spawn-requester.js";
-import type { SpawnAcpMode, SpawnAcpResult } from "./acp-spawn-result.js";
+import {
+  buildAcpSpawnFailureResult,
+  type SpawnAcpMode,
+  type SpawnAcpResult,
+} from "./acp-spawn-result.js";
 import {
   bindPreparedAcpThread,
   initializeAcpSpawnRuntime,
@@ -273,13 +274,14 @@ export async function spawnAcpDirect(
   const subagentStore = resolveSubagentCapabilityStore(parentSessionKey, {
     cfg,
   });
-  const requesterState = resolveAcpSpawnRequesterState({
+  const requesterState = await resolveAcpSpawnRequesterState({
     cfg,
     parentSessionKey,
     requesterAgentId,
     targetAgentId,
     ctx,
   });
+  ctx.assertActive?.();
   const ownership = resolveSubagentSpawnOwnership({
     cfg,
     agentSessionKey: ctx.agentSessionKey,
@@ -299,6 +301,8 @@ export async function spawnAcpDirect(
     cfg,
     store: subagentStore,
   });
+  await prepareSubagentSessionListReadCache();
+  ctx.assertActive?.();
   const resolveAdmission = (pendingChildren = 0, pendingChildSessionKeys?: ReadonlySet<string>) =>
     resolveSpawnAdmission({
       cfg,
@@ -384,17 +388,21 @@ export async function spawnAcpDirect(
 
   let preparedBinding: PreparedSpawnThreadBinding | null = null;
   if (requestThreadBinding) {
-    const prepared = prepareSpawnThreadBinding({
+    const prepared = await prepareSpawnThreadBinding({
       cfg,
       kind: "acp",
       mode: spawnMode,
-      bindingService: getSessionBindingService(),
+      bindingService: {
+        ...getSessionBindingService(),
+        listBySession: listSessionBindingsBySessionAsync,
+      },
       channel: requesterState.origin?.channel,
       accountId: requesterState.origin?.accountId,
       to: requesterState.origin?.to,
       threadId: requesterState.origin?.threadId,
       groupId: ctx.agentGroupId,
     });
+    ctx.assertActive?.();
     if (!prepared.ok) {
       return {
         status: "error",
@@ -484,7 +492,6 @@ export async function spawnAcpDirect(
         via: "spawn",
         actor: { type: "agent", id: requesterAgentId },
         inheritedGitContributorProfileIds: inheritSessionGitContributorProfileIds(parentEntry),
-        conversationLink: parentEntry?.conversationLink,
       });
       const storePath = resolveSessionStorePathCore(cfg.session?.store, { agentId: targetAgentId });
       const childSessionPatch = admission.childSessionPatch
@@ -694,23 +701,7 @@ export async function spawnAcpDirect(
     },
   });
   if (!pipelineResult.ok) {
-    const { phase, error, runId } = pipelineResult;
-    const bindingError = phase === "initialize" && isSessionBindingError(error);
-    return {
-      status: "error",
-      errorCode: bindingError
-        ? "thread_binding_invalid"
-        : phase === "dispatch"
-          ? "dispatch_failed"
-          : "spawn_failed",
-      error: bindingError
-        ? error.message
-        : phase === "register"
-          ? `Failed to register ACP run: ${summarizeSpawnError(error)}. Cleanup was attempted, but the already-started ACP run may still finish in the background.`
-          : summarizeSpawnError(error),
-      ...(phase !== "initialize" ? { childSessionKey: sessionKey } : {}),
-      ...(phase === "register" && runId ? { runId } : {}),
-    };
+    return buildAcpSpawnFailureResult(pipelineResult, sessionKey);
   }
   return {
     status: "accepted",

@@ -17,6 +17,7 @@ import type { StartupMigrationLease } from "../infra/startup-migration-checkpoin
 import { recordStartupMigrationWarnings } from "../infra/state-migrations.messages.js";
 import { withDeferredPluginDoctorMigrations } from "../plugins/doctor-contract-registry.js";
 import { createPluginCache, getPluginCache, withPluginCache } from "../plugins/plugin-cache.js";
+import type { PluginLifecycleLeaseContext } from "../plugins/plugin-lifecycle-lease.js";
 import { completePluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
 import {
@@ -43,6 +44,9 @@ export type ConfigPreflightSnapshotRead = {
 
 type MeasurePreflightStep = <T>(name: string, run: () => T | Promise<T>) => Promise<T>;
 
+// Match the five-minute startup migration lease budget, including slow cold starts.
+const STARTUP_STATE_ADMISSION_TIMEOUT_MS = 5 * 60_000;
+
 function throwPluginRegistryPersistenceFailed(
   reason: string,
   repair = 'Run "openclaw doctor --fix" and retry.',
@@ -52,17 +56,12 @@ function throwPluginRegistryPersistenceFailed(
   );
 }
 
-function formatPluginRegistryDifferences(
-  snapshot: PluginMetadataSnapshot | undefined,
-): string | undefined {
+function formatPluginRegistryDifferences(snapshot: PluginMetadataSnapshot | undefined): string {
   const differences = new Map(
     snapshot?.registryDiagnostics
       .flatMap((diagnostic) => diagnostic.differences ?? [])
       .map((difference) => [JSON.stringify(difference), difference] as const),
   );
-  if (differences.size === 0) {
-    return undefined;
-  }
   return [...differences.values()]
     .toSorted((left, right) =>
       [left.pluginId, left.persistedSource, left.derivedSource]
@@ -161,80 +160,56 @@ export async function persistRefreshedPluginIndex(params: {
   measure: MeasurePreflightStep;
   readPersistedSnapshot: () => Promise<ConfigPreflightSnapshotRead>;
   snapshotRead: ConfigPreflightSnapshotRead;
-  lease: StartupMigrationLease | undefined;
-  assertCurrent?: () => void;
+  lease: StartupMigrationLease;
+  pluginLease: PluginLifecycleLeaseContext;
 }): Promise<{
   snapshotRead: ConfigPreflightSnapshotRead;
 }> {
-  const lease = params.lease;
-  if (!lease) {
-    throwPluginRegistryPersistenceFailed("startup migration lease was not acquired");
+  const { lease, pluginLease } = params;
+  // The caller admits this snapshot after acquiring both writer leases.
+  pluginLease.assertOwned();
+  const derivedPluginMetadataSnapshot = params.snapshotRead.pluginMetadataSnapshot;
+  if (!derivedPluginMetadataSnapshot?.configFingerprint?.trim()) {
+    throwPluginRegistryPersistenceFailed("derived metadata was incomplete");
   }
-  const { withPluginLifecycleLease } = await import("../plugins/plugin-lifecycle-lease.js");
-  // Startup precedes plugin ownership; derive again after any pending installer settles.
-  return await withPluginLifecycleLease(
-    { env: params.env, assertCurrent: params.assertCurrent, processBound: true },
-    async (pluginLease) => {
-      const fresh = await measureDoctorConfigPreflightStep(
-        "plugin-index.read-current",
-        params.readPersistedSnapshot,
-        params.measure,
-      );
-      assertPreflightConfigUnchanged(params.snapshotRead.snapshot, fresh.snapshot);
-      pluginLease.assertOwned();
-      if (!needsRefreshedPluginIndexPersistence(fresh)) {
-        if (fresh.pluginMetadataSnapshot?.registrySource !== "persisted") {
-          throwPluginRegistryPersistenceFailed("fresh metadata was not persisted or derived");
-        }
-        return { snapshotRead: fresh };
-      }
-      const derivedPluginMetadataSnapshot = fresh.pluginMetadataSnapshot;
-      if (!derivedPluginMetadataSnapshot?.configFingerprint?.trim()) {
-        throwPluginRegistryPersistenceFailed("derived metadata was incomplete");
-      }
-      const { writePersistedInstalledPluginIndexWithLeaseSync } = await params.measure(
-        "plugin-index-store-import",
-        () => import("../plugins/installed-plugin-index-store-write.js"),
-      );
-      // Persist the original workspace scope; a config-wide union cannot pass scoped freshness checks.
-      await params.measure("plugin-index-persistence", () =>
-        writePersistedInstalledPluginIndexWithLeaseSync(
-          derivedPluginMetadataSnapshot.registryIndex,
-          {
-            env: params.env,
-            lease: {
-              assertOwnedInTransaction(database) {
-                lease.assertOwnedInTransaction(database);
-                pluginLease.assertOwnedInTransaction(database);
-              },
-            },
-          },
-        ),
-      );
-      const persistedSnapshotRead = await measureDoctorConfigPreflightStep(
-        "plugin-index.read-persisted",
-        params.readPersistedSnapshot,
-        params.measure,
-      );
-      const persistedPluginMetadataSnapshot = persistedSnapshotRead.pluginMetadataSnapshot;
-      // The registry selector owns freshness and returns "persisted" only after accepting the
-      // durable index. Persisted parsing intentionally canonicalizes non-runtime package metadata.
-      if (persistedPluginMetadataSnapshot?.registrySource !== "persisted") {
-        const diagnosticCodes = persistedPluginMetadataSnapshot?.registryDiagnostics.map(
-          (diagnostic) => diagnostic.code,
-        );
-        const differences = formatPluginRegistryDifferences(persistedPluginMetadataSnapshot);
-        throwPluginRegistryPersistenceFailed(
-          `reread source was ${persistedPluginMetadataSnapshot?.registrySource ?? "missing"}${
-            differences ? `; differences: ${differences}` : ""
-          }${diagnosticCodes?.length ? `; diagnostics: ${diagnosticCodes.join(", ")}` : ""}`,
-          'Stop plugin package changes, run "openclaw plugins registry --refresh", then retry.',
-        );
-      }
-      assertPreflightConfigUnchanged(params.snapshotRead.snapshot, persistedSnapshotRead.snapshot);
-      return { snapshotRead: persistedSnapshotRead };
-    },
+  const { writePersistedInstalledPluginIndexWithLeaseSync } = await params.measure(
+    "plugin-index-store-import",
+    () => import("../plugins/installed-plugin-index-store-write.js"),
   );
+  // Persist the original workspace scope; a config-wide union cannot pass scoped freshness checks.
+  await params.measure("plugin-index-persistence", () =>
+    writePersistedInstalledPluginIndexWithLeaseSync(derivedPluginMetadataSnapshot.registryIndex, {
+      env: params.env,
+      lease: {
+        assertOwnedInTransaction(database) {
+          lease.assertOwnedInTransaction(database);
+          pluginLease.assertOwnedInTransaction(database);
+        },
+      },
+    }),
+  );
+  const persistedSnapshotRead = await measureDoctorConfigPreflightStep(
+    "plugin-index.read-persisted",
+    params.readPersistedSnapshot,
+    params.measure,
+  );
+  const persistedPluginMetadataSnapshot = persistedSnapshotRead.pluginMetadataSnapshot;
+  // The registry selector owns freshness and returns "persisted" only after accepting the
+  // durable index. Persisted parsing intentionally canonicalizes non-runtime package metadata.
+  if (persistedPluginMetadataSnapshot?.registrySource !== "persisted") {
+    const diagnosticCodes = persistedPluginMetadataSnapshot?.registryDiagnostics.map(
+      (diagnostic) => diagnostic.code,
+    );
+    const differences = formatPluginRegistryDifferences(persistedPluginMetadataSnapshot);
+    throwPluginRegistryPersistenceFailed(
+      `reread source was ${persistedPluginMetadataSnapshot?.registrySource ?? "missing"}${
+        differences ? `; differences: ${differences}` : ""
+      }${diagnosticCodes?.length ? `; diagnostics: ${diagnosticCodes.join(", ")}` : ""}`,
+      'Stop plugin package changes, run "openclaw plugins registry --refresh", then retry.',
+    );
+  }
+  assertPreflightConfigUnchanged(params.snapshotRead.snapshot, persistedSnapshotRead.snapshot);
+  return { snapshotRead: persistedSnapshotRead };
 }
 
 /** Admit the same config and state before the lease and again before persistent writes. */
@@ -316,7 +291,7 @@ export async function readAdmittedConfigSnapshot(params: {
             }
             return { ...read, ...(recovery ? { recovery } : {}) };
           },
-          { env: params.env },
+          { env: params.env, admissionTimeoutMs: STARTUP_STATE_ADMISSION_TIMEOUT_MS },
         ),
       );
       if (

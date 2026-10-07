@@ -20,6 +20,8 @@ import { closeToolStreamBoundary } from "./tool-stream-state.ts";
 export type StreamCausalBoundaryState = {
   chatMessages?: unknown[];
   chatRunId?: string | null;
+  chatStreamItemId?: string;
+  chatStreamItemStartOffset?: number;
   chatStreamSegments?: ChatStreamSegment[];
 };
 
@@ -27,6 +29,8 @@ type StreamRolloverState = Partial<Pick<ToolStreamHost, "toolStreamById" | "chat
   chatMessages?: unknown[];
   chatRunId: string | null;
   chatStream: string | null;
+  chatStreamItemId?: string;
+  chatStreamItemStartOffset?: number;
   chatStreamStartedAt: number | null;
   chatStreamSegments?: ChatStreamSegment[];
 };
@@ -478,15 +482,13 @@ function interveningUserBoundaryRunId(params: {
   return undefined;
 }
 
-/** Closes cumulative assistant output at a tool or persisted user boundary. */
+/** Closes cumulative assistant output at a history or user boundary. */
 export function rolloverChatStream(
   host: StreamRolloverState,
   options: {
     runId: string;
     boundaryRunId?: string;
-    toolCallId?: string;
     persisted?: true;
-    timestamp?: number;
   },
 ): void {
   if (host.chatRunId !== options.runId) {
@@ -510,7 +512,7 @@ export function rolloverChatStream(
         afterBoundaryRunId: previousBoundaryRunId,
       }) ?? options.boundaryRunId)
     : undefined;
-  let streamTimestamp = host.chatStreamStartedAt ?? options.timestamp ?? Date.now();
+  let streamTimestamp = host.chatStreamStartedAt ?? Date.now();
   if (streamBoundaryRunId) {
     const toolTimestamp = closeToolStreamBoundary(host, options.runId, streamBoundaryRunId);
     if (toolTimestamp !== undefined) {
@@ -533,7 +535,6 @@ export function rolloverChatStream(
         runId: options.runId,
         ...(previousBoundaryRunId ? { afterBoundaryRunId: previousBoundaryRunId } : {}),
         ...(streamBoundaryRunId ? { boundaryRunId: streamBoundaryRunId } : {}),
-        ...(options.toolCallId ? { toolCallId: options.toolCallId } : {}),
         ...(options.persisted ? { persisted: true } : {}),
       },
     ];
@@ -548,7 +549,7 @@ export function rolloverChatStream(
       ...segments,
       {
         text: "",
-        ts: host.chatStreamStartedAt ?? options.timestamp ?? Date.now(),
+        ts: host.chatStreamStartedAt ?? Date.now(),
         runId: options.runId,
         boundaryRunId: options.boundaryRunId,
         boundaryMarker: true,
@@ -561,6 +562,8 @@ export function rolloverChatStream(
     return;
   }
   host.chatStream = null;
+  host.chatStreamItemId = undefined;
+  host.chatStreamItemStartOffset = undefined;
   // The closed segment owns elapsed time; a later cumulative tail must not restart the run clock.
   host.chatStreamStartedAt = null;
 }
