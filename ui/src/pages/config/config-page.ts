@@ -1109,10 +1109,14 @@ export class ConfigPage extends OpenClawLightDomElement {
       onWebPushSubscribe: () => void this.context.webPush.run({ kind: "enable" }),
       onWebPushUnsubscribe: () => void this.context.webPush.run({ kind: "disable" }),
       onWebPushTest: () => void this.context.webPush.run({ kind: "test" }),
-      onWebPushSetUserPreferences: (preferences) =>
-        void this.context.webPush.run({ kind: "set", scope: "user", preferences }),
-      onWebPushSetDevicePreferences: (preferences) =>
-        void this.context.webPush.run({ kind: "set", scope: "device", preferences }),
+      onWebPushSetUserPreferences: (preferences) => {
+        this.context.webPush.run({ kind: "set", scope: "user", preferences });
+        return undefined;
+      },
+      onWebPushSetDevicePreferences: (preferences) => {
+        this.context.webPush.run({ kind: "set", scope: "device", preferences });
+        return undefined;
+      },
     };
     const renderSectionEditor = (section: string, label: string, schema = props.schema) =>
       renderConfig({
