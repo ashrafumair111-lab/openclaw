@@ -64,9 +64,6 @@ type AppearancePreferences = Required<
     | "chatShowTaskProgress"
     | "chatCollapseTaskProgress"
     | "showAdvancedSettings"
-    | "lobsterPetVisits"
-    | "sessionDeleteConfirm"
-    | "lobsterPetSounds"
     | "chatSendShortcut"
     | "catalogOpenTarget"
     | "composerHoldToRecord"
@@ -176,14 +173,17 @@ export type ConfigProps = AppearancePreferences & {
   sessionObserverDisabled?: boolean;
   setSessionObserverEnabled?: (enabled: boolean) => void;
   setSessionObserverUtilityModel?: (selection: SessionObserverModelSelection) => void;
-  lobsterPetVisits: boolean;
-  setLobsterPetVisits: (enabled: boolean) => void;
-  sessionDeleteConfirm: boolean;
-  setSessionDeleteConfirm: (enabled: boolean) => void;
+
+  // Optional properties for tests and backward compatibility
+  lobsterPetVisits?: boolean;
+  setLobsterPetVisits?: (enabled: boolean) => void;
+  sessionDeleteConfirm?: boolean;
+  setSessionDeleteConfirm?: (enabled: boolean) => void;
+  lobsterPetSounds?: boolean;
+  setLobsterPetSounds?: (enabled: boolean) => void;
+
   archiveShortcutEnabled?: boolean;
   setArchiveShortcutEnabled?: (enabled: boolean) => void;
-  lobsterPetSounds: boolean;
-  setLobsterPetSounds: (enabled: boolean) => void;
   lobsterdexHref?: string;
   onOpenLobsterdex?: () => void;
   chatSendShortcutOverridden: boolean;
