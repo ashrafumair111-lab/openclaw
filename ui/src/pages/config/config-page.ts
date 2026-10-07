@@ -1019,6 +1019,7 @@ export class ConfigPage extends OpenClawLightDomElement {
           });
       },
       lobsterPetVisits: this.settings.lobsterPetVisits ?? UI_APPEARANCE_DEFAULTS.lobsterPetVisits,
+      setLobsterPetVisits: (enabled) => this.applySettings({ lobsterPetVisits: enabled }),
       sessionDeleteConfirm:
         this.settings.sessionDeleteConfirm ?? UI_APPEARANCE_DEFAULTS.sessionDeleteConfirm,
       setSessionDeleteConfirm: (enabled) => this.applySettings({ sessionDeleteConfirm: enabled }),
@@ -1027,6 +1028,7 @@ export class ConfigPage extends OpenClawLightDomElement {
       setArchiveShortcutEnabled: (enabled) =>
         this.applySettings({ archiveShortcutEnabled: enabled }),
       lobsterPetSounds: this.settings.lobsterPetSounds ?? UI_APPEARANCE_DEFAULTS.lobsterPetSounds,
+      setLobsterPetSounds: (enabled) => this.applySettings({ lobsterPetSounds: enabled }),
       lobsterdexHref: pathForRoute("lobsterdex", this.context.basePath),
       onOpenLobsterdex: () => this.context.navigate("lobsterdex"),
       chatSendShortcut: normalizeChatSendShortcut(this.settings.chatSendShortcut),
@@ -1109,14 +1111,10 @@ export class ConfigPage extends OpenClawLightDomElement {
       onWebPushSubscribe: () => void this.context.webPush.run({ kind: "enable" }),
       onWebPushUnsubscribe: () => void this.context.webPush.run({ kind: "disable" }),
       onWebPushTest: () => void this.context.webPush.run({ kind: "test" }),
-      onWebPushSetUserPreferences: (preferences) => {
-        this.context.webPush.run({ kind: "set", scope: "user", preferences });
-        return undefined;
-      },
-      onWebPushSetDevicePreferences: (preferences) => {
-        this.context.webPush.run({ kind: "set", scope: "device", preferences });
-        return undefined;
-      },
+      onWebPushSetUserPreferences: (preferences) =>
+        void this.context.webPush.run({ kind: "set", scope: "user", preferences }),
+      onWebPushSetDevicePreferences: (preferences) =>
+        void this.context.webPush.run({ kind: "set", scope: "device", preferences }),
     };
     const renderSectionEditor = (section: string, label: string, schema = props.schema) =>
       renderConfig({
