@@ -1,7 +1,11 @@
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { deferSqliteWorkerCommitReceipt } from "../../infra/sqlite-worker-operation-admission.js";
 import { createSqliteWorkerTransferOwner } from "../../infra/sqlite-worker-transfer.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db-contract.js";
+import { runOpenClawAgentWriteTransaction } from "../../state/openclaw-agent-db.js";
+import type { AgentDatabaseAdmissionRestriction } from "../../state/openclaw-agent-execution-domain.js";
 import type { AgentWorkerOperationContext } from "../../state/openclaw-agent-operation-context.js";
+import { captureTrajectoryRuntimeRetentionMetadataMutation } from "../../trajectory/runtime-retention.sqlite.js";
 import {
   applySessionEntryPatchInDatabase,
   writeSessionEntryPatchInDatabase,
@@ -12,7 +16,7 @@ import {
 } from "./session-accessor.sqlite-entry-store.js";
 import { prepareSessionEntryReplacementPublication } from "./session-accessor.sqlite-replacement-state.js";
 import { assertCanonicalSqliteSessionKeysCurrent } from "./session-canonical-key.js";
-import { sessionEntryPatchPredicateMatches } from "./session-entry-patch-guard.js";
+import { readSessionEntryPatchPredicate } from "./session-entry-patch-guard.js";
 import {
   mergeSessionEntryPatch,
   reduceSessionEntryPatch,
@@ -24,7 +28,45 @@ import type {
   SessionEntryPatchReduction,
   SessionEntryPatchSelection,
 } from "./session-entry-patch.types.js";
-import { readRefusedSessionSource } from "./session-source-predicate.worker.js";
+import { readSessionSourceValidation } from "./session-source-predicate.worker.js";
+
+/** Connection-bound domains share the executor's transaction and publication grants. */
+export function createSessionWorkerOperationContext(
+  database: OpenClawAgentDatabase,
+  options: AgentWorkerOperationContext["options"],
+  bound: {
+    admit(stage: "transaction" | "commit", restriction?: AgentDatabaseAdmissionRestriction): void;
+  },
+  domain: string,
+): AgentWorkerOperationContext {
+  const native = database.db;
+  const context: AgentWorkerOperationContext = {
+    options,
+    open: () => database,
+    admit(stage, publication) {
+      bound.admit(stage, (request, dispatch) => {
+        if (!isRecord(request.facts)) {
+          throw new Error(`${domain} admission omitted its database identity`);
+        }
+        dispatch({ ...request, facts: { ...request.facts, publication } });
+      });
+    },
+    writeTransaction(operationLabel, owner, write) {
+      return runOpenClawAgentWriteTransaction(
+        (current) => {
+          if (current.db !== native) {
+            throw new Error(`${owner} lost its canonical database owner`);
+          }
+          context.admit("transaction");
+          return write(current);
+        },
+        options,
+        { operationLabel },
+      );
+    },
+  };
+  return context;
+}
 
 export function readSessionEntryPatchSnapshot(
   database: OpenClawAgentDatabase,
@@ -41,22 +83,35 @@ export function commitSessionEntryPatch(
 ): SessionEntryPatchReceipt {
   return writeTransaction(input.operationLabel, "Session patch", (database) => {
     let result: SessionEntryPatchCommitted;
-    if (!sessionEntryPatchPredicateMatches(database, input.sessionKey, input.shouldCommitIf)) {
+    const predicate = readSessionEntryPatchPredicate(
+      database,
+      input.sessionKey,
+      input.shouldCommitIf,
+    );
+    if (!predicate.matches) {
       // A false predicate precedes CAS and the throwing guard, including for a null patch.
       result = { kind: "session-entry-patch", entry: null };
     } else {
+      const publishRetention =
+        "operation" in input || input.next
+          ? captureTrajectoryRuntimeRetentionMetadataMutation(database.db)
+          : undefined;
       const options = {
         consumePendingReset: input.consumePendingReset,
         providerReviewMutation: input.providerReviewMutation,
         workerGuard: { cliHistory: input.cliHistory, conversation: input.conversation },
         assertCommitAllowed: () => {
-          const refusedSource = readRefusedSessionSource(database, input.sources);
+          const validation = readSessionSourceValidation(database, input.sources);
+          const { refusedSource } = validation;
           if (refusedSource) {
             result = { kind: "session-entry-patch", entry: null, refusedSource };
             transferSessionEntryWorkerCandidate(database, admit, result);
             throw new Error("Session source refusal was not rejected");
           }
-          admit("transaction", { kind: "session-entry-patch-validated" });
+          admit("transaction", {
+            kind: "session-entry-patch-validated",
+            sourceValidation: validation,
+          });
         },
       };
       let mutation;
@@ -105,7 +160,19 @@ export function commitSessionEntryPatch(
             database,
           )
         : undefined;
-      result = { kind: "session-entry-patch", entry: mutation.entry, publication };
+      // Publish after every patch-owned write, including commit-receipt preparation.
+      if (mutation.identity) {
+        publishRetention?.();
+      }
+      result = {
+        kind: "session-entry-patch",
+        entry: mutation.entry,
+        publication,
+        transcriptPredicate:
+          mutation.entry.sessionId === predicate.transcriptPredicate?.sessionId
+            ? predicate.transcriptPredicate
+            : undefined,
+      };
     }
     return transferSessionEntryWorkerCandidate(database, admit, result);
   });
