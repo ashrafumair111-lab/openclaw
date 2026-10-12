@@ -445,13 +445,6 @@ vi.mock("../config/sessions.js", () => ({
   ),
 }));
 
-vi.mock("../config/sessions/transcript-resolve.runtime.js", () => ({
-  resolveSessionTranscriptFile: async (params: { sessionEntry?: SessionEntry }) => ({
-    sessionFile: params.sessionEntry?.sessionFile ?? "/tmp/session.jsonl",
-    sessionEntry: params.sessionEntry ?? { sessionId: "session-1", updatedAt: Date.now() },
-  }),
-}));
-
 vi.mock("./internal-session-effects.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./internal-session-effects.js")>()),
   prepareInternalSessionEffectsSession: (...args: unknown[]) =>
@@ -647,8 +640,9 @@ vi.mock("./defaults.js", () => ({
 }));
 
 // Exec eligibility is outside model-switch scope; avoid loading its policy graph.
+// mock-isolation: Model-switch tests isolate exec-policy storage and node discovery.
 vi.mock("./exec-defaults.js", () => ({
-  resolveNodeExecEligibility: () => ({ canExec: false }),
+  resolveNodeExecEligibilityAsync: () => ({ canExec: false }),
 }));
 
 vi.mock("./lanes.js", () => ({

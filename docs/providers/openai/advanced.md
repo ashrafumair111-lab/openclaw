@@ -309,6 +309,24 @@ fallback even with explicit `agentRuntime.id: "codex"`; see
     commits, and filters it from user-visible history and diagnostics. Never
     display or log the encrypted content.
 
+    For API-key requests to `/responses/compact`, OpenClaw saves the complete
+    returned window: retained user, developer, system, or assistant messages
+    followed by one encrypted checkpoint. The endpoint may retain fewer user
+    messages than it received. Retained content, including assistant
+    `output_text`, is replayed after a restart without pruning messages or
+    rewriting content. Retained assistant item IDs are omitted on replay because
+    their original reasoning items have been absorbed by the checkpoint.
+    Invalid windows, windows that require transcript redaction, and windows
+    that exceed the next request's
+    budget fall back to client-side compaction.
+
+    The next foreground turn waits for any pending local transcript projection
+    rebuild before reading the checkpoint. Request token counts need not fall
+    below the compaction threshold: instructions and tools are sent again, and
+    tool results or reasoning produced after the checkpoint remain in context.
+    To check replay, inspect item types rather than token totals: the newest
+    `compaction` item replaces the covered prefix, followed only by later items.
+
     <Tabs>
       <Tab title="Enable explicitly">
         Useful for store-capable endpoints like Azure OpenAI Responses. Setting

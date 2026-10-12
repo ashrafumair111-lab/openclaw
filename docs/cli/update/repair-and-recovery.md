@@ -140,6 +140,8 @@ migration resources. The capture stays beside the selected state directory in
 `<state-directory>.update-captures/<run-id>`. Doctor continuations keep the same
 capture; they do not replace it with already migrated state. State-directory
 relocation leaves its original location and recorded paths intact.
+Continuation verifies the recorded live updater's process identity and ancestry;
+unreadable supervisors above that updater do not prevent its Doctor from reusing the capture.
 Inherited control-plane and managed-helper runs retain their existing capture
 behavior. Standalone `doctor --fix` preserves a separate pre-repair copy; that
 copy does not replace an earlier update's originals. Standalone `doctor --fix`
@@ -366,7 +368,10 @@ recovery owner. This behavior does not deliver a newer repair implementation to
 an already-blocked older CLI. For completed `anchor-retired` history, use the
 [independent helper recovery](/install/updating#recover-a-completed-receipt-with-an-older-updater)
 to preserve the receipt and unblock the original updater without replacing its
-installation. Unfinished recovery retains the first-hop installation limitation.
+installation. For the narrowly verified remounted `publishing` case, the
+[independent settlement-only repair](/install/updating#recover-an-unfinished-publication-after-a-remount)
+can also clear the older updater's first-hop block without replacing packages.
+Other unfinished recovery still requires its original owner.
 
 For a package update stranded by an older updater's launcher ownership checks,
 use the manual installation hop, then repair from the new CLI at the same root:
