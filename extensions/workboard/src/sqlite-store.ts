@@ -3,6 +3,7 @@ import path from "node:path";
 import {
   resolveDatabaseEngineInput,
   openEngineWorkerStore,
+  reopenFailedEngineWorkerStore,
   runEngineStoreOperation,
 } from "openclaw/plugin-sdk/database-engine-runtime";
 import { extractErrorCode } from "openclaw/plugin-sdk/error-runtime";
@@ -22,6 +23,10 @@ type WorkboardSqliteStores = WorkboardPersistence & {
   runWithWriteAuthority: WorkboardWriteAuthority;
 };
 
+type WorkboardWorkerStore = Awaited<
+  ReturnType<typeof openEngineWorkerStore<WorkboardSqliteWorkerOperations>>
+>;
+
 export function createWorkboardSqliteStores(options: {
   config?: Parameters<typeof resolveDatabaseEngineInput>[0];
   dbPath?: string;
@@ -31,7 +36,7 @@ export function createWorkboardSqliteStores(options: {
     options.dbPath ?? path.join(resolveStateDir(), "plugins", "workboard", "workboard.sqlite"),
   );
   const selectedDatabase = resolveDatabaseEngineInput(options.config ?? {});
-  const worker = selectedDatabase.then((input) =>
+  let worker: Promise<WorkboardWorkerStore> = selectedDatabase.then((input) =>
     openEngineWorkerStore<WorkboardSqliteWorkerOperations>(
       {
         moduleUrl: options.workerModuleUrl,
@@ -104,6 +109,45 @@ export function createWorkboardSqliteStores(options: {
     });
   const ready = opened.then(() => undefined);
   void ready.catch(() => {});
+  let connectionState = opened;
+  let healing: Promise<void> | undefined;
+  /**
+   * Move off a worker slot that failed for good. The broker keeps the dead actor
+   * registered against this path, so without retiring it every later card read or
+   * write resolves to the same slot and repeats its first error. Only the failed
+   * call is lost: the next one runs on the replacement worker.
+   */
+  async function healWorker(): Promise<void> {
+    healing ??= (async () => {
+      const input = await selectedDatabase;
+      const failed = await worker;
+      const next = await reopenFailedEngineWorkerStore<WorkboardSqliteWorkerOperations>(
+        failed,
+        { moduleUrl: options.workerModuleUrl, databasePath, input },
+        input,
+      );
+      if (next === failed) {
+        return;
+      }
+      worker = Promise.resolve(next);
+      connectionState = next
+        .execute({ type: "connection.open", input: undefined })
+        .then((result) => {
+          if (result.ok) {
+            ownedConnection = result.value.connection;
+            return result.value;
+          }
+          ownedConnection = result.failure.cleanupConnection;
+          return unwrapWorkboardSqliteResult<
+            WorkboardSqliteOperations["connection.open"]["output"]
+          >(result);
+        });
+      await connectionState;
+    })().finally(() => {
+      healing = undefined;
+    });
+    await healing;
+  }
   async function execute<K extends keyof WorkboardSqliteOperations>(
     type: K,
     input: WorkboardSqliteOperations[K]["input"],
@@ -111,28 +155,41 @@ export function createWorkboardSqliteStores(options: {
   ): Promise<WorkboardSqliteOperations[K]["output"]> {
     const authority = writes ? writeAuthority.getStore() : undefined;
     const store = await worker;
-    const result = unwrapWorkboardSqliteResult(
-      await runEngineStoreOperation(
-        store,
-        await selectedDatabase,
-        writes,
-        (scope) => scope.execute({ type, input }),
-        authority
-          ? () => {
-              if (!authority.active) {
-                throw new Error("Workboard mutation authority has settled.");
+    try {
+      const result = unwrapWorkboardSqliteResult(
+        await runEngineStoreOperation(
+          store,
+          await selectedDatabase,
+          writes,
+          (scope) => scope.execute({ type, input }),
+          authority
+            ? () => {
+                if (!authority.active) {
+                  throw new Error("Workboard mutation authority has settled.");
+                }
+                authority.assertCurrent?.();
               }
-              authority.assertCurrent?.();
-            }
-          : undefined,
-        databasePath,
-      ),
-    );
-    // A rejected comparison has accepted no mutation; a retry still needs authority.
-    if (authority && result !== false && result !== "conflict" && result !== "owner_busy") {
-      authority.assertCurrent = undefined;
+            : undefined,
+          databasePath,
+        ),
+      );
+      // A rejected comparison has accepted no mutation; a retry still needs authority.
+      if (authority && result !== false && result !== "conflict" && result !== "owner_busy") {
+        authority.assertCurrent = undefined;
+      }
+      return result;
+    } catch (error) {
+      // The operation is already spent; recovering here only spares the next one.
+      try {
+        await healWorker();
+      } catch (healError) {
+        throw new AggregateError(
+          [error, healError],
+          "Workboard SQLite failed and could not be recovered; restart the Gateway to restore Workboard.",
+        );
+      }
+      throw error;
     }
-    return result;
   }
   async function run<Args, T>(
     args: Args,
@@ -145,7 +202,7 @@ export function createWorkboardSqliteStores(options: {
       throw new Error("Workboard SQLite connection is closed.");
     }
     const captured = structuredClone(args);
-    const pending = opened.then(({ connection }) => operation(connection, captured));
+    const pending = connectionState.then(({ connection }) => operation(connection, captured));
     operations.add(pending);
     try {
       return await pending;

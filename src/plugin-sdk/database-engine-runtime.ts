@@ -5,5 +5,6 @@ export {
 } from "../infra/database-engine/config.js";
 export {
   openEngineWorkerStore,
+  reopenFailedEngineWorkerStore,
   runEngineStoreOperation,
 } from "../infra/database-engine/worker-store.js";

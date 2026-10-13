@@ -457,6 +457,16 @@ export class SqliteWorkerBroker {
     return this.lifecycle.retireActor(identity);
   }
 
+  /**
+   * Retire the actor behind one store client so its next open takes a fresh worker.
+   * Shared-state identity callers keep `getActorIdentity`; ordinary plugin stores
+   * have no state context, and a failed slot otherwise poisons every later open.
+   */
+  retireStoreActor(store: object): Promise<void> {
+    const client = this.stores.get(store);
+    return client ? this.lifecycle.retireActor(client.actor) : Promise.resolve();
+  }
+
   getActorIdentity(store: object): Readonly<Pick<Actor, "key" | "databasePath">> {
     const client = this.stores.get(store);
     // Retained facts remain readable after worker failure; dispatch owns liveness.

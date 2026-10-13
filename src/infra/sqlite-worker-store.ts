@@ -173,6 +173,27 @@ export function closeUnclaimedSharedStateSqliteWorkers(databasePath: string): Pr
   return withCallerErrors(resolveSqliteWorkerBroker().closeUnclaimedSharedState(databasePath));
 }
 
+/**
+ * Return a usable store for the same database after its worker slot failed.
+ *
+ * A healthy store is returned unchanged. A failed one keeps its recorded failure,
+ * so its next open would throw the same error and no amount of retrying helps:
+ * the actor has to leave the registry before a fresh worker can serve it. The
+ * failed call is never replayed here — a dispatched command's outcome belongs to
+ * its caller — so callers heal the store and let the next request succeed.
+ */
+export async function reopenFailedSqliteWorkerStore<Operations extends SqliteWorkerOperations>(
+  store: SqliteWorkerStore<Operations>,
+  options: SqliteWorkerStoreOptions & { target?: never; existingOnly?: false },
+): Promise<SqliteWorkerStore<Operations>> {
+  const broker = resolveSqliteWorkerBroker();
+  if (broker.isAvailable(store)) {
+    return store;
+  }
+  await withCallerErrors(broker.retireStoreActor(store));
+  return openSqliteWorkerStore<Operations>(options);
+}
+
 export function openSqliteWorkerStore<Operations extends SqliteWorkerOperations>(
   options: SqliteWorkerStoreOptions & { existingOnly: true; target?: never },
 ): Promise<SqliteWorkerStore<Operations> | undefined>;
