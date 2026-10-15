@@ -734,13 +734,19 @@ describe("CLI history through Gateway terminal persistence", () => {
         }
         const context = await f.laterContext("account-a");
         expect(JSON.stringify(context.reseedMessages)).toContain("Prior account-owned request");
-        expect(context.durableContext).toContain(
-          "Your request couldn't be completed: Run timed out",
-        );
+        expect(context.durableContext).toBeUndefined();
         const transcript = await loadTranscriptEvents(f.cliTarget);
         expect(
           transcript.filter((entry) => isRecord(entry) && entry.type === "custom_message"),
-        ).toHaveLength(1);
+        ).toEqual([
+          expect.objectContaining({
+            customType: "run-failed-before-reply",
+            content: "Your request couldn't be completed: Run timed out",
+            display: true,
+            excludeFromContext: true,
+            details: { runId: "cli-timeout-run", error: "Run timed out" },
+          }),
+        ]);
         const otherAccount = await f.laterContext("account-b");
         expect(otherAccount.reseedMessages).toEqual([]);
         expect(otherAccount.durableContext).toBeUndefined();
@@ -764,12 +770,21 @@ describe("CLI history through Gateway terminal persistence", () => {
       expect(completed).toBe(false);
       release.resolve();
       await finish;
-      expect((await f.laterContext("account-a")).durableContext).toContain("Run timed out");
+      expect(await loadTranscriptEvents(f.cliTarget)).toContainEqual(
+        expect.objectContaining({
+          type: "custom_message",
+          customType: "run-failed-before-reply",
+          content: "Your request couldn't be completed: Run timed out",
+          display: true,
+          excludeFromContext: true,
+          details: { runId: "cli-timeout-run", error: "Run timed out" },
+        }),
+      );
     });
   });
 
   it.each(["close", "fallback"] as const)(
-    "rejects a captured writer after %s without changing history",
+    "settles a closed writer but rejects a replaced candidate: %s",
     async (revoke) => {
       await withOpenClawTestState({ scenario: "minimal" }, async () => {
         setRuntimeConfigSnapshot({});
@@ -782,8 +797,18 @@ describe("CLI history through Gateway terminal persistence", () => {
           clearAgentRunTerminalWriteContext(f.admission.operationalRunInstance);
         }
         try {
-          await expect(pending).rejects.toThrow("Terminal write owner changed");
-          expect(await loadTranscriptEvents(f.cliTarget)).toEqual(before);
+          if (revoke === "fallback") {
+            await expect(pending).rejects.toThrow("Terminal write owner changed");
+            expect(await loadTranscriptEvents(f.cliTarget)).toEqual(before);
+          } else {
+            await pending;
+            await f.persist("error");
+            expect(loadSessionEntry(f.cliTarget)?.status).toBe("timeout");
+            expect(await loadTranscriptEvents(f.cliTarget)).toHaveLength(before.length + 1);
+            expect((await f.laterContext("account-a")).reseedMessages).toContainEqual(
+              expect.objectContaining({ role: "user", content: "Prior account-owned request" }),
+            );
+          }
         } finally {
           f.admission.close();
         }

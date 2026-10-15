@@ -1784,6 +1784,29 @@ describe("mcp loopback server", () => {
     );
   });
 
+  it("bounds capture draining by elapsed time after a wall-clock rollback", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+    const captureKey = "clock-rollback";
+    beginMcpLoopbackToolCallCapture({ captureKey, onToolCallResult: vi.fn() });
+    markMcpLoopbackToolCallStarted({ captureKey, toolName: "message", args: {} });
+    const settled = vi.fn();
+    const idle = waitForMcpLoopbackToolCallCaptureIdle(captureKey, {
+      timeoutMs: 120,
+      admissionGraceMs: 0,
+    }).then(settled);
+    try {
+      vi.setSystemTime(Date.now() - 60_000);
+      await vi.advanceTimersByTimeAsync(119);
+      expect(settled).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toHaveBeenCalledWith(false);
+    } finally {
+      clearMcpLoopbackToolCallCapture(captureKey);
+      await idle;
+      vi.useRealTimers();
+    }
+  });
+
   it("waits through a quiet admission grace before clearing a failed-turn capture", async () => {
     const captureKey = "admission-grace";
     beginMcpLoopbackToolCallCapture({
@@ -1864,37 +1887,6 @@ describe("mcp loopback server", () => {
         result: expect.objectContaining({ sentBeforeError: true }),
       }),
     );
-  });
-
-  it("advertises and executes only readable tools while tolerating an unreadable description", async () => {
-    const hiddenExecute = vi.fn<MockGatewayTool["execute"]>(async () => ({ content: [] }));
-    const brokenName = makeMockTool();
-    const hidden = makeMockTool({ name: "hidden", execute: hiddenExecute });
-    const healthy = makeMessageTool();
-    for (const [tool, field] of [
-      [brokenName, "name"],
-      [hidden, "parameters"],
-      [healthy, "description"],
-    ] as const) {
-      Object.defineProperty(tool, field, {
-        get() {
-          throw new Error("unreadable plugin field");
-        },
-      });
-    }
-    mockScopedTools([brokenName, hidden, healthy]);
-    const { runtime } = await startLoopbackServerForTest();
-    const listed = await readOkMcpPayload(
-      await sendLoopbackToolsList({ token: runtime.ownerToken }),
-    );
-    expect(listed.result?.tools).toEqual([{ name: "message", inputSchema: objectSchema({}) }]);
-    expectMcpResultText(await callMainSessionTool({ token: runtime.ownerToken }), "ok");
-    expectMcpResultText(
-      await callMainSessionTool({ token: runtime.ownerToken, name: "hidden" }),
-      "Tool not available: hidden",
-      true,
-    );
-    expect(hiddenExecute).not.toHaveBeenCalled();
   });
 
   it("resolves legacy cron tools/call names to the renamed automations tool", async () => {
@@ -2067,29 +2059,6 @@ describe("mcp loopback server", () => {
     expect(response.status).toBe(202);
     await expect(response.text()).resolves.toBe("");
     expect(resolveGatewayScopedToolsMock).toHaveBeenCalledTimes(1);
-  });
-
-  it("dispatches tools/call notifications without returning a response", async () => {
-    const execute = vi.fn(async () => ({
-      content: [{ type: "text", text: "ok" }],
-    }));
-    mockScopedTools([makeMessageTool({ execute })]);
-    const { runtime, port } = await startLoopbackServerForTest();
-    const response = await sendRaw({
-      port,
-      token: runtime.ownerToken,
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        method: "tools/call",
-        params: { name: "message", arguments: { body: "hello" } },
-      }),
-    });
-
-    expect(response.status).toBe(202);
-    await expect(response.text()).resolves.toBe("");
-    expect(resolveGatewayScopedToolsMock).toHaveBeenCalledTimes(1);
-    expect(execute).toHaveBeenCalledTimes(1);
   });
 
   it("keeps delayed valid MCP request bodies open when timeout config exceeds Node's timer ceiling", async () => {

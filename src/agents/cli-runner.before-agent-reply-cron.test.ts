@@ -445,6 +445,7 @@ describe("runCliAgent before_agent_reply seam", () => {
     expect(authSuccessMock).toHaveBeenCalledWith({
       store,
       profileId,
+      modelId: runParams.model,
       provider: "google-gemini-cli",
       agentDir: "/tmp/agent",
     });
@@ -644,6 +645,12 @@ describe("runCliAgent before_agent_reply seam", () => {
     expect(result.meta.agentMeta?.sessionId).toBe("");
     expect(result.meta.agentMeta?.clearCliSessionBinding).toBe(true);
     expect(result.payloads?.[0]?.text).toBe(SILENT_REPLY_TOKEN);
+    expect(result.meta).toMatchObject({
+      finalAssistantRawText: "NO_REPLY",
+      providerStarted: false,
+    });
+    const { resolveDiagnosticModelResponse } = await import("./diagnostic-model-response.js");
+    expect(resolveDiagnosticModelResponse(result)).toBeUndefined();
     expect(prepareMock).not.toHaveBeenCalled();
     expect(executeMock).not.toHaveBeenCalled();
   });

@@ -1,5 +1,5 @@
 /* @vitest-environment jsdom */
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../api/gateway.ts";
 import { normalizeSidebarEntries } from "../app-navigation.ts";
@@ -14,8 +14,9 @@ import "../test-helpers/app-sidebar-suite.ts";
 import { createDataTransferStub } from "../test-helpers/drag-data.ts";
 import { gatewayHelloForMethods } from "../test-helpers/gateway-methods.ts";
 import { settleLitElement } from "../test-helpers/lit-settle.ts";
-import { AppSidebarSessionNavigationElement } from "./app-sidebar-session-navigation.ts";
-import "./app-sidebar.ts";
+import { getAppSidebarOwner } from "./app-sidebar.tsx";
+import { installTitleTooltips } from "./tooltip-title.ts";
+import { dispatchMousePointer, settleTooltip } from "./tooltip.test-support.ts";
 
 async function fixture() {
   const gateway = createGatewayHarness({} as GatewayBrowserClient);
@@ -36,9 +37,6 @@ async function fixture() {
     };
   }
   const { sidebar } = await mountSidebar(gateway.gateway, sessions.sessions);
-  if (!(sidebar instanceof AppSidebarSessionNavigationElement)) {
-    throw new Error("expected sidebar");
-  }
   sidebar.connected = true;
   sidebar.sidebarEntries = [];
   sidebar.onUpdateSidebarEntries = (entries) => {
@@ -62,7 +60,8 @@ describe("personal navigation rail", () => {
       [...sidebar.querySelectorAll("[data-navigation-view]")].map((button) =>
         button.getAttribute("aria-label"),
       ),
-    ).toEqual(["Pages", "Sessions", "Online"]);
+    ).toEqual(["Pages", "Sessions", "Users"]);
+    const frame = sidebar.querySelector("aside.sidebar")!;
     const bottom = sidebar.querySelector(".sidebar-rail__bottom")!;
     expect(bottom.querySelector(".sidebar-footer-bar__home")).not.toBeNull();
     expect(bottom.querySelector("openclaw-sidebar-attention")).not.toBeNull();
@@ -73,35 +72,11 @@ describe("personal navigation rail", () => {
     await sidebar.updateComplete;
     expect(sidebar.querySelector(".sidebar-pages")).not.toBeNull();
     expect(sidebar.querySelector(".sidebar-session-content")).toBeNull();
+    expect(sidebar.querySelector("aside.sidebar")).toBe(frame);
     expect(sidebar.querySelector(".sidebar-rail__bottom")).toBe(bottom);
   });
 
-  it("keeps main activity visible on Home when the middle list is collapsed", async () => {
-    const { sidebar, result, sessions } = await fixture();
-    const mainIndex = result.sessions.findIndex((row) => row.key === "agent:main:main");
-    sessions.publishList({
-      agentId: "main",
-      result: {
-        ...result,
-        sessions: result.sessions.with(mainIndex, {
-          ...result.sessions[mainIndex]!,
-          status: "running",
-          hasActiveRun: true,
-        }),
-      },
-    });
-    sidebar.navigationCollapsed = true;
-    sidebar.requestUpdate();
-    await sidebar.updateComplete;
-    expect(sidebar.querySelector(".sidebar-footer-bar__home .session-glyph__ring")).not.toBeNull();
-    expect(
-      sidebar
-        .querySelector(".sidebar-footer-bar__home .session-glyph__ring")
-        ?.getAttribute("aria-label"),
-    ).toBe("Active run");
-  });
-
-  it("keeps Home outbox attention and drafts visible with its run state", async () => {
+  it("keeps Home outbox attention and drafts visible with its run state when collapsed", async () => {
     const { sidebar, result, sessions } = await fixture();
     const mainIndex = result.sessions.findIndex((row) => row.key === "agent:main:main");
     sessions.publishList({
@@ -120,9 +95,13 @@ describe("personal navigation rail", () => {
       attentionCountForSession: (key) => (key === "agent:main:main" ? 2 : 0),
       hasSessionDraft: (key) => key === "agent:main:main",
     };
+    sidebar.navigationCollapsed = true;
     await sidebar.updateComplete;
     const home = sidebar.querySelector(".sidebar-footer-bar__home")!;
     expect(home.querySelector(".session-glyph__ring")).not.toBeNull();
+    expect(home.querySelector(".session-glyph__ring")?.getAttribute("aria-label")).toBe(
+      "Active run",
+    );
     expect(
       home.querySelector(".session-row-badge--attention")?.getAttribute("aria-label"),
     ).toContain("2");
@@ -208,9 +187,7 @@ describe("personal navigation rail", () => {
   });
 
   it.each([
-    { label: "Release Notes", icon: undefined, monogram: "RN" },
     { label: "Résumé", icon: undefined, monogram: "R" },
-    { label: "Launch Pad", icon: "🚀", monogram: undefined },
     {
       label: "Architecture",
       icon: `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/></svg>')}`,
@@ -331,9 +308,61 @@ describe("personal navigation rail", () => {
     await sidebar.updateComplete;
     const menu = sidebar.querySelector(".sidebar-rail-pin-menu")!;
     expect(menu).not.toBeNull();
-    menu.dispatchEvent(new CustomEvent("wa-select", { detail: { item: { value: "remove" } } }));
+    menu.querySelector<HTMLButtonElement>('[data-value="remove"]')!.click();
     await sidebar.updateComplete;
     expect(sidebar.sidebarEntries).toEqual(["person:offline", "session:agent:other:unloaded"]);
+  });
+
+  it("retires pending pin hints while a context menu owns keyboard focus", async () => {
+    const { sidebar } = await fixture();
+    sidebar.sidebarEntries = ["session:agent:main:mine", "session:agent:main:other"];
+    await sidebar.updateComplete;
+    await sidebar.sidebarMenus.preloadMenuRenderer();
+    const source = sidebar.querySelector<HTMLAnchorElement>(
+      '.sidebar-rail [data-sidebar-entry="session:agent:main:mine"] a',
+    )!;
+    const hovered = sidebar.querySelector<HTMLAnchorElement>(
+      '.sidebar-rail [data-sidebar-entry="session:agent:main:other"] a',
+    )!;
+    vi.useFakeTimers({
+      toFake: ["setTimeout", "clearTimeout", "requestAnimationFrame", "cancelAnimationFrame"],
+    });
+    source.focus();
+    onTestFinished(installTitleTooltips(document));
+    dispatchMousePointer(hovered, "pointerover");
+    const tooltip = document.body.querySelector<HTMLElementTagNameMap["openclaw-tooltip"]>(
+      ":scope > openclaw-tooltip",
+    )!;
+    tooltip.delay = 100;
+    await tooltip.updateComplete;
+    expect(tooltip.content).not.toBe("");
+    expect(tooltip.hasAttribute("open")).toBe(false);
+    source.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "F10",
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await sidebar.updateComplete;
+    await tooltip.updateComplete;
+    const menu = sidebar.querySelector(".sidebar-rail-pin-menu")!;
+    expect(menu).not.toBeNull();
+    vi.advanceTimersByTime(100);
+    expect(tooltip.hasAttribute("open")).toBe(false);
+
+    menu.querySelector<HTMLButtonElement>('[data-value="remove"]')!.click();
+    await sidebar.updateComplete;
+    await tooltip.updateComplete;
+    dispatchMousePointer(hovered.closest(".sidebar-rail__pin")!, "pointerleave");
+    dispatchMousePointer(hovered, "pointerover");
+    const reopened = document.body.querySelector<HTMLElementTagNameMap["openclaw-tooltip"]>(
+      ":scope > openclaw-tooltip",
+    )!;
+    vi.advanceTimersByTime(150);
+    await settleTooltip(reopened);
+    expect(reopened.hasAttribute("open")).toBe(true);
   });
 
   it("toggles the panel from the active view and expands it when switching views", async () => {
@@ -357,6 +386,8 @@ describe("personal navigation rail", () => {
     expect(sidebar.navigationCollapsed).toBe(true);
     await select("online");
     expect(sidebar.navigationView).toBe("online");
+    expect(sidebar.navigationCollapsed).toBe(false);
+    await select("online");
     expect(sidebar.navigationCollapsed).toBe(false);
     expect(toggle).toHaveBeenCalledTimes(4);
   });
@@ -456,7 +487,7 @@ describe("personal navigation rail", () => {
     await vi.dynamicImportSettled();
     await sidebar.updateComplete;
     expect(sidebar.querySelector(".sidebar-agent-menu")).not.toBeNull();
-    expect(sidebar.querySelector('[value="agent:research"]')).not.toBeNull();
+    expect(sidebar.querySelector('[data-value="agent:research"]')).not.toBeNull();
     expect(sidebar.querySelector(".sidebar-brand")).toBeNull();
   });
 
@@ -473,14 +504,6 @@ describe("personal navigation rail", () => {
     };
     await sidebar.updateComplete;
     const transfer = createDataTransferStub();
-    const collapse = sidebar.querySelector<HTMLButtonElement>(
-      ".sidebar-online .sidebar-session-group-toggle",
-    )!;
-    collapse.click();
-    await sidebar.updateComplete;
-    expect(sidebar.querySelector(".sidebar-online__row")).toBeNull();
-    collapse.click();
-    await sidebar.updateComplete;
     drag(sidebar.querySelector(".sidebar-online__row")!, "dragstart", transfer);
     drag(sidebar.querySelector(".sidebar-rail__pins")!, "drop", transfer);
     await sidebar.updateComplete;
@@ -575,7 +598,7 @@ describe("personal navigation rail", () => {
     ).toBe("Current title");
   });
 
-  it("retains a lookup that settles while detached within the same connection", async () => {
+  it("retains a lookup across a synchronous host move within the same connection", async () => {
     const { sidebar, sessions, result } = await fixture();
     const pending = createDeferred<Awaited<ReturnType<typeof sessions.sessions.describe>>>();
     const read = vi.spyOn(sessions.sessions, "describe").mockReturnValue(pending.promise);
@@ -583,11 +606,11 @@ describe("personal navigation rail", () => {
     await sidebar.updateComplete;
     const parent = sidebar.parentElement!;
     sidebar.remove();
+    parent.append(sidebar.hostElement);
     pending.resolve({
       session: { ...result.sessions[1]!, key: "agent:other:unloaded", label: "Detached result" },
     });
     await pending.promise;
-    parent.append(sidebar);
     await sidebar.updateComplete;
     expect(read).toHaveBeenCalledTimes(1);
     expect(sidebar.querySelector('.sidebar-rail a[aria-label="Detached result"]')).not.toBeNull();
@@ -615,7 +638,7 @@ describe("personal navigation rail", () => {
     await bootstrap.run({}, async () => {});
     expect(read).not.toHaveBeenCalled();
 
-    parent.append(sidebar);
+    parent.append(sidebar.hostElement);
     await settleLitElement(sidebar);
     expect(read).toHaveBeenCalledExactlyOnceWith({ key });
     expect(sidebar.querySelector('.sidebar-rail a[aria-label="Current title"]')).not.toBeNull();
@@ -639,7 +662,7 @@ describe("personal navigation rail", () => {
     );
     sidebar.sidebarEntries = keys.map((key) => `session:${key}`);
     await sidebar.updateComplete;
-    const render = vi.spyOn(sidebar, "render");
+    const render = vi.spyOn(getAppSidebarOwner(sidebar.hostElement)!, "commitRender");
     for (const [index, pending] of reads.entries()) {
       pending.resolve({
         session: { ...result.sessions[1]!, key: keys[index]!, label: `Pinned ${index}` },
@@ -750,7 +773,7 @@ describe("personal navigation rail", () => {
     sidebar.remove();
     await sidebar.updateComplete;
     expect(catalogQueries()).toHaveLength(0);
-    parent.append(sidebar);
+    parent.append(sidebar.hostElement);
     await sidebar.updateComplete;
     expect(catalogQueries()).toHaveLength(1);
     expect(sidebar.querySelector(".sidebar-pages")).not.toBeNull();

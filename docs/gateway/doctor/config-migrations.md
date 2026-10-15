@@ -18,6 +18,31 @@ Doctor keeps plugin repair and diagnostic contracts available through later heal
 checks and service finalization. It releases its private plugin resources when
 the flow ends, including failed runs.
 
+## Cloud setup secret migration
+
+The Crabbox plugin retires `cloudWorkers.profiles.<id>.settings.setupEnv`.
+Run `openclaw doctor --fix` to replace each legacy environment name with a
+same-name store SecretRef under `settings.setupSecrets`. The shared-store entry
+must already be protected (`kind: "secret"`) and have explicit destination
+bindings. Doctor compares a legacy host environment value when one is present;
+a conflicting value leaves the profile unchanged. It also preserves an existing
+conflicting `setupSecrets` mapping instead of granting a different secret.
+
+Doctor reports missing protected entries, missing bindings, conflicting values,
+and unavailable store inspection without exposing secret values. It never
+creates store entries, overwrites values, or infers allowed hosts. Repair the
+store through `openclaw secrets`, then rerun Doctor. A profile migrates only when
+every selected entry is ready; unrelated profiles may migrate independently.
+Audit and dry-run inspection leave authored config untouched.
+
+The plugin returns the repaired config to Doctor's existing backed-up,
+include-aware writer. Update-time Doctor uses the same plugin health repair when
+that phase is admitted. An update that defers it records the repair warning;
+run `openclaw doctor --fix` afterward. Unrepaired `setupEnv` profiles refuse new
+provisioning, with no plaintext fallback. Existing lease inspection and cleanup
+remain available. Protected setup secrets keep snapshots enabled; old plaintext
+setup image identities are not adopted as protected images.
+
 ## Runtime config migration
 
 Runtime config reads require per-model context budgets and current GitHub Copilot
@@ -808,6 +833,22 @@ for the publication contract and the remaining risk for an old CLI stalled
 beyond the grace period.
 
 ## Native Codex recovery after Tasks removal
+
+The Codex plugin's `codex-native-assignment-repair` runs during
+`openclaw doctor --fix` and update-time Doctor, after session repair. It collapses
+proven duplicate assignments for the same child and native turn and removes
+assignments whose requester session, lifecycle, or connection is provably
+obsolete. Compatible aliases retain their receipt and recorded-result metadata;
+conflicting facts produce a recoverable warning without changing the row.
+Separate pending turns of one child are preserved. Repairs use the
+existing SQLite backup and exact-row compare-and-apply owner; no database schema
+or assignment format changes. Ordinary Gateway startup does not run this repair.
+
+Unknown or malformed ownership and bindings changed during repair are preserved
+with recoverable warnings, allowing updates to finish best effort. Retry
+`openclaw doctor --fix` after resolving those warnings. Historical retry exhaustion
+without durable evidence stays unresolved: neither the age of an assignment nor
+a child's completed execution proves its result was delivered or abandoned.
 
 The Codex plugin's `codex-native-task-assignments` Doctor migration preserves
 recoverable native child work when upgrading from the Tasks runtime. It runs

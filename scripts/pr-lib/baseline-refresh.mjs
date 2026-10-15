@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDirectRunUrl } from "../lib/direct-run.mjs";
+import { incomingReview } from "./incoming-review.mjs";
 import { validateReviewArtifacts } from "./review-artifacts.mjs";
 import { worktreeEntry } from "./review-transition-state.mjs";
 
@@ -33,7 +34,7 @@ const hash = (bytes, write = false) =>
 
 // Empty resolution files are valid blobs. Read the opened regular descriptor once;
 // Git receives those bytes without filters, pathname rereads or text normalization.
-function readRegular(path) {
+export function readRegular(path) {
   const fd = fs.openSync(path, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
   try {
     const before = fs.fstatSync(fd);
@@ -352,9 +353,14 @@ function bindingAt(anchor, suppliedBytes) {
     "authority",
     "resolutions",
     ...(Object.hasOwn(record, "sourceAdmission") ? ["sourceAdmission"] : []),
+    ...(Object.hasOwn(record, "incomingSource") ? ["incomingSource"] : []),
   ]);
   if (
     record.version !== 1 ||
+    (Object.hasOwn(record, "incomingSource") &&
+      (record.incomingSource !== true ||
+        Object.hasOwn(record, "sourceAdmission") ||
+        record.sourceHead !== record.incomingHead)) ||
     !Number.isSafeInteger(record.pr) ||
     record.pr < 1 ||
     ![
@@ -408,9 +414,46 @@ const retiredNames = [
   "correction-review.md",
   "correction-incoming-review.json",
   "correction-incoming-review.md",
-  "prepare-push-result.env",
-  "prepare-sync-result.env",
 ];
+const publicationNames = ["prepare-push-result.env", "prepare-sync-result.env"];
+
+function incomingSourceAuthority(pr, source, reviewOid, contextPath) {
+  const { prMeta } = incomingReview(pr, source, reviewOid);
+  // Preparation env files belong to the shell owner, including its quoting rules.
+  execFileSync("bash", [
+    "-c",
+    `set -euo pipefail
+source .local/pr-meta.env
+[ "$PR_NUMBER" = "$2" ] && [ "$PR_HEAD_SHA" = "$3" ] && [ "$PR_HEAD" = "$5" ] || exit 1
+source "$1"
+[ "$PR_NUMBER" = "$2" ] && [ "$PR_HEAD_SHA_BEFORE" = "$3" ] && [ "$PR_HEAD" = "$5" ] || exit 1
+[ "$PREP_BRANCH" = "pr-$2-prep" ] && [ "$PREP_REVIEW_MODE" = correction ] || exit 1
+[ "$PREP_INCOMING_JSON_OID" = "$4" ]
+[ -z "\${PREP_BASELINE_REFRESH_HEAD:-}\${PREP_BASELINE_REFRESH_OID:-}" ]`,
+    "baseline-incoming-source",
+    contextPath,
+    String(pr),
+    source,
+    reviewOid,
+    prMeta.headRefName,
+  ]);
+}
+
+function incomingSourceSnapshot(pr, source, reviewOid) {
+  if (present(bindingPath) || present(".local/review-transition.json")) {
+    throw new Error("Incoming baseline admission requires an unbound preparation source.");
+  }
+  const authority = Object.fromEntries(
+    authorityPaths.map((path) => [path, present(path) ? hash(readRegular(path)) : "absent"]),
+  );
+  incomingSourceAuthority(pr, source, reviewOid, ".local/prep-context.env");
+  git(["verify-commit", source]);
+  process.stdout.write(
+    Object.entries(authority)
+      .map(([path, oid]) => `${path} ${oid}`)
+      .join("\n"),
+  );
+}
 
 function proofInventory(archives) {
   return Object.fromEntries(
@@ -498,6 +541,15 @@ function retainedAuthority(binding) {
     if (!["absent"].includes(expected) && !oidPattern.test(expected)) {
       throw new Error("Invalid retained authority object ID.");
     }
+    if (expected === "absent" && publicationNames.includes(path.slice(".local/".length))) {
+      const archived = join(record.archive, path.slice(".local/".length));
+      if (present(archived)) {
+        throw new Error(`Unexpected retained publication evidence: ${archived}`);
+      }
+      if (replayFiles) {
+        replayFiles[archived] = null;
+      }
+    }
     if ([".local/pr-meta.json", ".local/pr-meta.env", ".local/review.json"].includes(path)) {
       if (hash(readRegular(path)) !== expected) {
         throw new Error(`Incoming authority changed: ${path}`);
@@ -507,7 +559,6 @@ function retainedAuthority(binding) {
     }
   }
   const meta = JSON.parse(readRegular(".local/pr-meta.json"));
-  const review = JSON.parse(retained(".local/correction-review.json"));
   const incoming = JSON.parse(readRegular(".local/review.json"));
   const required = incoming.findings.filter((finding) =>
     ["BLOCKER", "IMPORTANT"].includes(finding.severity),
@@ -518,29 +569,45 @@ function retainedAuthority(binding) {
       ? [...prior.scope, ...paths(predecessor.anchor, record.sourceHead)]
       : paths(record.incomingHead, record.sourceHead)),
   ]);
-  const violations = validateReviewArtifacts({
-    review,
-    prMeta: { ...meta, headRefOid: record.sourceHead, files: [...scope].map((path) => ({ path })) },
-  });
-  if (
-    violations.length ||
-    review.recommendation !== "READY FOR /prepare-pr" ||
-    meta.number !== record.pr ||
-    meta.headRefOid !== record.incomingHead ||
-    record.authority[".local/review.json"] !== record.incomingReviewOid ||
-    incoming.recommendation !== "NEEDS WORK" ||
-    !required.length ||
-    review.correction?.incomingHeadSha !== record.incomingHead ||
-    review.correction?.incomingReviewJsonOid !== record.incomingReviewOid ||
-    record.authority[".local/correction-incoming-review.json"] !== record.incomingReviewOid ||
-    review.correction.resolvedFindings?.length !== required.length ||
-    !required.every(({ id }) =>
-      review.correction.resolvedFindings.some((item) => item.id === id && item.resolution?.trim()),
-    )
-  ) {
-    throw new Error(
-      `Retained correction review does not authorize its source. ${violations.join("; ")}`,
+  if (record.incomingSource) {
+    incomingSourceAuthority(
+      record.pr,
+      record.sourceHead,
+      record.incomingReviewOid,
+      join(record.archive, "prep-context.env"),
     );
+  } else {
+    const review = JSON.parse(retained(".local/correction-review.json"));
+    const violations = validateReviewArtifacts({
+      review,
+      prMeta: {
+        ...meta,
+        headRefOid: record.sourceHead,
+        files: [...scope].map((path) => ({ path })),
+      },
+    });
+    if (
+      violations.length ||
+      review.recommendation !== "READY FOR /prepare-pr" ||
+      meta.number !== record.pr ||
+      meta.headRefOid !== record.incomingHead ||
+      record.authority[".local/review.json"] !== record.incomingReviewOid ||
+      incoming.recommendation !== "NEEDS WORK" ||
+      !required.length ||
+      review.correction?.incomingHeadSha !== record.incomingHead ||
+      review.correction?.incomingReviewJsonOid !== record.incomingReviewOid ||
+      record.authority[".local/correction-incoming-review.json"] !== record.incomingReviewOid ||
+      review.correction.resolvedFindings?.length !== required.length ||
+      !required.every(({ id }) =>
+        review.correction.resolvedFindings.some(
+          (item) => item.id === id && item.resolution?.trim(),
+        ),
+      )
+    ) {
+      throw new Error(
+        `Retained correction review does not authorize its source. ${violations.join("; ")}`,
+      );
+    }
   }
   if (!admission && /^PREP_BASELINE_REFRESH_(?:HEAD|OID)=/mu.test(decoder.decode(context))) {
     throw new Error("Source context is already baseline-bound.");
@@ -575,7 +642,7 @@ function atomicWrite(path, bytes) {
   fs.renameSync(pending, path);
 }
 
-function requireOperationOwner(pr, root, lockRef, lockOid) {
+export function requireOperationOwner(pr, root, lockRef, lockOid) {
   if (lockRef !== `refs/openclaw/pr-operation-locks/${pr}` || !oidPattern.test(lockOid)) {
     throw new Error("Missing baseline transition operation owner.");
   }
@@ -590,7 +657,7 @@ function requireOperationOwner(pr, root, lockRef, lockOid) {
   ]);
 }
 
-function requireCheckout(source, anchor, branch, cwd, gitDir) {
+export function requireCheckout(source, anchor, branch, cwd, gitDir) {
   if (
     fs.realpathSync(".") !== cwd ||
     text("rev-parse", "--absolute-git-dir") !== gitDir ||
@@ -671,6 +738,7 @@ function transition(command, pr, source, anchor, branch, root, lockRef, lockOid)
       for (const [path, encoded] of [
         [bindingPath, facts.binding],
         [".local/prep-context.env", facts.context],
+        ...Object.entries(facts.publication),
       ]) {
         const bytes = Buffer.from(encoded, "base64");
         if (facts.files[path] !== digest(bytes)) {
@@ -735,7 +803,7 @@ function transition(command, pr, source, anchor, branch, root, lockRef, lockOid)
   ) {
     throw new Error("Baseline transition binding changed.");
   }
-  for (const name of retiredNames) {
+  for (const name of [...retiredNames, ...publicationNames]) {
     const path = `.local/${name}`;
     if (
       fs.lstatSync(path, { throwIfNoEntry: false }) &&
@@ -744,6 +812,17 @@ function transition(command, pr, source, anchor, branch, root, lockRef, lockOid)
       throw new Error(`Active evidence changed during baseline transition: ${path}`);
     }
   }
+  // Publication records still describe the hosted branch after a local baseline
+  // change. Restore exact source receipts if an older interrupted transition
+  // retired them, while reviews and gates remain candidate-specific.
+  const publication = Object.fromEntries(
+    publicationNames.flatMap((name) => {
+      const path = `.local/${name}`;
+      return record.authority[path] === "absent"
+        ? []
+        : [[path, readRegular(join(record.archive, name)).toString("base64")]];
+    }),
+  );
 
   const files = replayFiles;
   const directories = replayDirectories;
@@ -774,6 +853,7 @@ function transition(command, pr, source, anchor, branch, root, lockRef, lockOid)
     paths: ownedPaths,
     binding: bytes.toString("base64"),
     context: boundContext.toString("base64"),
+    publication,
   };
   checkPrepared(facts, ...identity, false);
   process.stdout.write(JSON.stringify(facts));
@@ -805,7 +885,7 @@ function checkSource(pr, source, cwd, root, lockRef, lockOid, suppliedSnapshot, 
   );
 }
 
-export function baselineRefreshScope({
+export function baselineRefreshCandidate({
   pr,
   incoming,
   incomingReviewOid,
@@ -817,7 +897,7 @@ export function baselineRefreshScope({
     if (present(bindingPath)) {
       throw new Error("Unbound baseline refresh evidence; retain and reconcile preparation.");
     }
-    return paths(incoming, head, false);
+    return { paths: paths(incoming, head, false), baselineHead: null };
   }
   const binding = bindingAt(anchor);
   if (
@@ -831,7 +911,10 @@ export function baselineRefreshScope({
   }
   const retained = retainedAuthority({ ...binding, anchor });
   git(["merge-base", "--is-ancestor", anchor, head]);
-  return [...retained.scope, ...paths(anchor, head)];
+  return {
+    paths: [...retained.scope, ...paths(anchor, head)],
+    baselineHead: binding.record.baselineHead,
+  };
 }
 
 function create(pr, source, baseline, main, archive, snapshot, manifestPath, successor, signer) {
@@ -873,6 +956,15 @@ function create(pr, source, baseline, main, archive, snapshot, manifestPath, suc
     };
   }
   const prMeta = JSON.parse(readRegular(".local/pr-meta.json"));
+  const incomingSource = !successor && source === prMeta.headRefOid;
+  if (incomingSource) {
+    incomingSourceAuthority(
+      pr,
+      source,
+      authority[".local/review.json"],
+      join(archive, "prep-context.env"),
+    );
+  }
   const manifest = manifestPath ? JSON.parse(readRegular(manifestPath)) : undefined;
   if (manifestPath) {
     exactKeys(manifest, ["version", "pr", "sourceHead", "baselineHead", "forkBase", "resolutions"]);
@@ -901,6 +993,7 @@ function create(pr, source, baseline, main, archive, snapshot, manifestPath, suc
     authority,
     resolutions: replay.resolutions,
     ...(sourceAdmission ? { sourceAdmission } : {}),
+    ...(incomingSource ? { incomingSource: true } : {}),
   };
   const bytes = Buffer.from(`${JSON.stringify(record, null, 2)}\n`);
   const oid = hash(bytes);
@@ -1079,7 +1172,7 @@ function continueSigning(pr, oid, commitPath) {
 function checkSigning(pr, root, lockRef, lockOid) {
   const facts = JSON.parse(fs.readFileSync(0, "utf8"));
   for (const [path, expected] of Object.entries(facts.files)) {
-    if (digest(readRegular(path)) !== expected) {
+    if ((present(path) ? digest(readRegular(path)) : null) !== expected) {
       throw new Error("Signing evidence changed after replay.");
     }
   }
@@ -1108,7 +1201,9 @@ function checkSigning(pr, root, lockRef, lockOid) {
 if (isDirectRunUrl(process.argv[1], import.meta.url)) {
   try {
     const [command, ...args] = process.argv.slice(2);
-    if (command === "create" && args.length === 7) {
+    if (command === "incoming-source-snapshot" && args.length === 3) {
+      incomingSourceSnapshot(Number(args[0]), ...args.slice(1));
+    } else if (command === "create" && args.length === 7) {
       create(Number(args[0]), ...args.slice(1));
     } else if (command === "create-successor" && args.length === 11) {
       create(Number(args[0]), ...args.slice(1, 7), args.slice(7));

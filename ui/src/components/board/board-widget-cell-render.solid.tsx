@@ -1,10 +1,8 @@
 import type { BoardGetParams } from "@openclaw/gateway-protocol";
 import { dynamic, type JSX } from "@solidjs/web";
-import { createEffect, For, Show } from "solid-js";
-import type { BoardTab, BoardWidget } from "../../lib/board/types.ts";
+import { createEffect } from "solid-js";
+import type { BoardWidget } from "../../lib/board/types.ts";
 import { t } from "../../lib/reactive/i18n.ts";
-import { Icon } from "../solid/icon.tsx";
-import { BOARD_SIZE_PRESETS } from "./board-widget-cell-options.ts";
 
 export function BoardCoreWidget(props: {
   tagName?: string;
@@ -32,99 +30,6 @@ export function BoardCoreWidget(props: {
         element = node;
       }}
     />
-  );
-}
-
-export function BoardWidgetMenu(props: {
-  widget: BoardWidget;
-  tabs: readonly BoardTab[];
-  disabled: boolean;
-  onSelect: (event: CustomEvent<{ item: { value?: string } }>) => void;
-}) {
-  return (
-    <wa-dropdown
-      class="board-widget__menu"
-      placement="bottom-end"
-      onWa-select={(event) => props.onSelect(event)}
-    >
-      <button
-        class="board-widget__menu-trigger"
-        slot="trigger"
-        type="button"
-        aria-label={t("board.widget.menuLabel")}
-        title={t("board.widget.menuLabel")}
-      >
-        ⋮
-      </button>
-      <BoardWidgetMenuItems widget={props.widget} tabs={props.tabs} disabled={props.disabled} />
-    </wa-dropdown>
-  );
-}
-
-export function BoardWidgetMenuItems(props: {
-  widget: BoardWidget;
-  tabs: readonly BoardTab[];
-  disabled: boolean;
-  prefix?: string;
-}) {
-  const prefix = () => props.prefix ?? "";
-  const tabs = () => props.tabs.filter((tab) => tab.tabId !== props.widget.tabId);
-  return (
-    <>
-      <div class="board-widget__menu-heading">{t("board.widget.moveToTab")}</div>
-      <Show
-        when={tabs().length > 0}
-        fallback={<span class="board-widget__menu-empty">{t("board.widget.noOtherTabs")}</span>}
-      >
-        <For keyed={false} each={tabs()}>
-          {(tab) => (
-            <wa-dropdown-item
-              value={`${prefix()}move:${tab().tabId}`}
-              prop:disabled={props.disabled}
-            >
-              {tab().title}
-            </wa-dropdown-item>
-          )}
-        </For>
-      </Show>
-      <div class="board-widget__menu-heading">{t("board.widget.resize")}</div>
-      <For keyed={false} each={Object.entries(BOARD_SIZE_PRESETS)}>
-        {(entry) => (
-          <wa-dropdown-item
-            class="board-widget__preset"
-            value={`${prefix()}resize:${entry()[0]}`}
-            prop:disabled={props.disabled}
-          >
-            {entry()[0].toUpperCase()}
-            <span slot="details">
-              {entry()[1].w}×{entry()[1].h}
-            </span>
-          </wa-dropdown-item>
-        )}
-      </For>
-      <Show when={props.widget.contentKind === "html"}>
-        <wa-dropdown-item
-          class="board-widget__preset"
-          prop:type="checkbox"
-          value={`${prefix()}height:auto`}
-          prop:checked={props.widget.heightMode !== "fixed"}
-          prop:disabled={props.disabled}
-        >
-          {t("board.widget.autoHeight")}
-        </wa-dropdown-item>
-      </Show>
-      <div class="board-widget__menu-separator" role="separator" />
-      <wa-dropdown-item
-        class="board-widget__menu-danger"
-        value={`${prefix()}remove`}
-        prop:disabled={props.disabled}
-      >
-        <span slot="icon" class="board-widget__menu-icon" aria-hidden="true">
-          <Icon name="trash" />
-        </span>
-        {t("board.widget.remove")}
-      </wa-dropdown-item>
-    </>
   );
 }
 

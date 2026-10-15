@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   generatePostgresSchemas,
+  generateLogbookPostgresSchema,
   generateWorkboardPostgresSchema,
   pendingPromotion,
 } from "../../scripts/generate-postgres-schema.mts";
@@ -35,6 +36,64 @@ function verifiedFixture(sql: string, verify: (db: DatabaseSync) => void) {
 }
 
 describe("PostgreSQL schema generation", () => {
+  it("preserves all agent relational objects and declares search separately", async () => {
+    const { files, report } = await generatePostgresSchemas(root);
+    const agent = report.catalogs.agent!;
+    for (const kind of ["table", "column", "default", "check", "index", "foreignKey", "trigger"]) {
+      expect(
+        agent.objects.filter(
+          (item) =>
+            item.kind === kind &&
+            item.sql === null &&
+            item.table !== "sqlite_sequence" &&
+            item.pendingCapability !== "search",
+        ),
+        kind,
+      ).toEqual([]);
+    }
+    expect(agent.objects.filter((item) => item.kind === "trigger" && item.sql)).toHaveLength(10);
+    expect(agent.objects.filter((item) => item.kind === "triggerFunction")).toHaveLength(4);
+    expect(agent.objects.filter((item) => item.kind === "check" && item.sql)).toHaveLength(66);
+    expect(
+      report.pendingCapabilities.filter(
+        (item) => item.database === "agent" && item.kind === "trigger",
+      ),
+    ).toHaveLength(4);
+    expect(
+      report.pendingCapabilities.filter(
+        (item) => item.database === "agent" && item.kind === "virtualTable",
+      ),
+    ).toHaveLength(2);
+    expect(JSON.parse(files["manifest.json"]!).pendingCapabilities).toEqual(
+      report.pendingCapabilities,
+    );
+    expect(files["agent.postgres.sql"]).toContain(
+      "NEW.session_key IS DISTINCT FROM OLD.session_key",
+    );
+    expect(files["agent.postgres.sql"]).toContain(
+      "NEW.route_context_json IS NOT DISTINCT FROM OLD.route_context_json",
+    );
+    expect(files["portability-report.md"]).toContain(
+      "Duplicate-key JSON is unreachable from writers",
+    );
+  });
+
+  it("refuses unsupported agent objects and trigger bodies", async () => {
+    const directory = fixture("");
+    const file = path.join(directory, "src/state/openclaw-agent-schema.sql");
+    fs.writeFileSync(file, "CREATE TABLE unsupported (id INTEGER DEFAULT (abs(-1))) STRICT;");
+    await expect(generatePostgresSchemas(directory)).rejects.toThrow(
+      /Unsupported agent default.*abs/,
+    );
+    fs.writeFileSync(
+      file,
+      fs
+        .readFileSync(path.join(root, "src/state/openclaw-agent-schema.sql"), "utf8")
+        .replace("snapshot_revision + 1", "snapshot_revision + 2"),
+    );
+    await expect(generatePostgresSchemas(directory)).rejects.toThrow(/Unsupported trigger update/);
+  });
+
   it("keeps the complete workboard artifact current and uses the admitted search path", async () => {
     const { sql, catalog, portMetadata } = await generateWorkboardPostgresSchema();
     expect(sql).toBe(
@@ -70,6 +129,29 @@ describe("PostgreSQL schema generation", () => {
     expect(postData).toContain('ALTER TABLE "workboard_card_labels" ADD FOREIGN KEY');
   });
 
+  it("keeps Logbook DDL and port allocation metadata current", async () => {
+    const { sql, portMetadata } = await generateLogbookPostgresSchema();
+    expect(sql).toBe(
+      fs.readFileSync(
+        path.join(root, "extensions/logbook/src/logbook-schema.postgres.sql"),
+        "utf8",
+      ),
+    );
+    expect(portMetadata).toEqual(
+      JSON.parse(
+        fs.readFileSync(
+          path.join(root, "src/infra/database-engine/logbook-port.generated.json"),
+          "utf8",
+        ),
+      ),
+    );
+    expect(portMetadata.tables.flatMap((table) => table.identities)).toEqual(
+      Array.from({ length: 4 }, () => ({ column: "id", autoIncrement: true })),
+    );
+    expect(sql).not.toContain("sqlite_sequence");
+    expect(sql).not.toMatch(/\b(?:BEGIN|COMMIT|CREATE SCHEMA)\b/);
+  });
+
   it("derives identity allocation semantics and composite keys from canonical SQLite", () => {
     const db = new DatabaseSync(":memory:");
     try {
@@ -91,9 +173,15 @@ describe("PostgreSQL schema generation", () => {
 
   it("renders eager and lazy state DDL inside the connection owner's namespace and transaction", async () => {
     const { files, report } = await generatePostgresSchemas(root);
-    for (const file of ["state.postgres.sql", ...report.fragments.map((item) => item.file)]) {
-      expect(files[file], file).not.toMatch(/^(?:BEGIN|COMMIT|SET|CREATE SCHEMA)\b/m);
+    for (const file of [
+      "state.postgres.sql",
+      "state-v23-v24.postgres.sql",
+      "agent.postgres.sql",
+      ...report.fragments.map((item) => item.file),
+    ]) {
+      expect(files[file], file).not.toMatch(/^(?:BEGIN;|COMMIT;|SET |CREATE SCHEMA )/m);
       expect(files[file], file).not.toContain('"openclaw_state".');
+      expect(files[file], file).not.toContain('"openclaw_agent".');
     }
     expect(files["state.postgres.sql"]).toContain('CREATE TABLE "schema_meta" (');
     const backgrounds = report.fragments.find((item) =>
@@ -114,6 +202,8 @@ describe("PostgreSQL schema generation", () => {
         "manifest.json",
         "portability-report.md",
         "state.postgres.sql",
+        "state-v23-v24.postgres.sql",
+        "runtime.ts",
       ].toSorted(),
     );
     expect(
@@ -238,9 +328,7 @@ describe("PostgreSQL schema generation", () => {
     const { files, report } = await generatePostgresSchemas(directory, 'proof"scope');
     const sql = files["state.postgres.sql"]!;
     expect(sql).not.toMatch(/\b(?:BEGIN|COMMIT|CREATE SCHEMA)\b/);
-    expect(files["agent.postgres.sql"]).toContain('CREATE SCHEMA "proof""scope_agent";');
-    expect(files["agent.postgres.sql"]).toContain("BEGIN;");
-    expect(files["agent.postgres.sql"]).toContain("COMMIT;");
+    expect(files["agent.postgres.sql"]).not.toMatch(/^(?:BEGIN|COMMIT|CREATE SCHEMA)\b/m);
     expect(sql).toContain('"id" bigint GENERATED BY DEFAULT AS IDENTITY');
     expect(sql).toContain('PRIMARY KEY ("position", "alias")');
     expect(sql).toContain('UNIQUE ("parent_id", "label")');
@@ -284,6 +372,9 @@ describe("PostgreSQL schema generation", () => {
       ["trim(name) = name", 'btrim("name")'],
       ["substr(name, 1, 2) = 'aa'", 'substr("name", 1, 2)'],
       ["coalesce(optional, name) = name", 'coalesce("optional", "name")'],
+      ["ifnull(optional, '') = name", "coalesce(\"optional\", '')"],
+      ["octet_length(name) <= 32", 'octet_length("name")'],
+      ["name NOT LIKE '%/%' AND name NOT LIKE '%\\%'", "strpos(\"name\", '/') = 0"],
       ["typeof(value) = 'integer'", "ELSE 'integer' END"],
       ["name GLOB 'run-?.*'", String.raw`\Arun-.\..*\Z`],
       ["name NOT GLOB '*[^A-Za-z0-9_-]*'", String.raw`!~ '\A.*[^A-Za-z0-9_-].*\Z'`],

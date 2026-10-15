@@ -1,21 +1,20 @@
-import { createEffect, createSignal, onCleanup, Show, untrack } from "solid-js";
+import { createEffect, createMemo, createSignal, onCleanup, Show, untrack } from "solid-js";
+import type { SolidRouteProps } from "../../app-route-types.ts";
 import { ImageLightbox } from "../../components/image-lightbox.tsx";
 import { renderLazyViewError } from "../../components/lazy-view-error.ts";
 import { renderSessionBackground } from "../../components/session-background-view.ts";
-import "../../components/web-awesome-popover.ts";
 import { registerNewSessionSetupEnglish } from "../../i18n/locales/en-new-session-setup.ts";
 import { useOptionalApplication } from "../../lib/reactive/context.ts";
 import { t } from "../../lib/reactive/i18n.ts";
-import { defineSolidBridge } from "../../lit/solid-bridge.ts";
-import { LitContent, solidContent } from "../../lit/solid-content.tsx";
 import "../../styles/chat/composer.css";
 import "../../styles/chat/composer-surface.css";
 import "../../styles/new-session.css";
 import "../../styles/new-session-attachment-panel.css";
+import { defineSolidBridge } from "../../lit/solid-bridge.ts";
+import { LitContent, solidContent } from "../../lit/solid-content.tsx";
 import { chatStartupStatusLabel } from "../chat/chat-run-startup.ts";
 import { ChatPermissionPicker } from "../chat/components/chat-permission-picker.tsx";
 import type { SidebarContent } from "../chat/components/chat-sidebar-content-types.ts";
-import { renderWelcomeState } from "../chat/components/chat-welcome.ts";
 import { CatalogBar } from "./catalog-target-view.tsx";
 import * as catalog from "./catalog-target.ts";
 import { NewSessionDictationStatus, NewSessionDictationView } from "./composer-dictation-view.tsx";
@@ -25,22 +24,53 @@ import { isWorktreeNameValid } from "./create-params.ts";
 import { CreationComposer } from "./creation-composer-render.tsx";
 import { DraftError, NewSessionBody } from "./draft-body.solid.tsx";
 import type { DraftSubmissionFlow } from "./draft-submission-flow.ts";
+import { DraftWelcome } from "./draft-welcome.tsx";
 import {
   NewSessionIncognitoControl,
   NewSessionIncognitoNotice,
 } from "./incognito-control-view.tsx";
+import { restoredInstantThreadPage } from "./instant-thread-restore.ts";
 import type { NewSessionRouteData } from "./location.ts";
 import { NewSessionPageOwner, type PageHost } from "./new-session-page-owner.ts";
 import { AgentSelect, NewSessionPlaceControls } from "./target-controls-view.tsx";
+import type { NewSessionPlaceControlsOptions } from "./target-controls.ts";
 
 registerNewSessionSetupEnglish();
 
+export function NewSessionRoute(props: SolidRouteProps<NewSessionRouteData>) {
+  // Instant-thread handoff parks and restores this exact registered host across route roots.
+  return (
+    <Show
+      when={restoredInstantThreadPage(props.data)}
+      fallback={<openclaw-new-session-page prop:data={props.data} />}
+    >
+      {(page) => page()}
+    </Show>
+  );
+}
+
 const pageOwners = new WeakMap<PageHost, NewSessionPageOwner>();
 
-function DraftBlock(props: { page: () => NewSessionPageOwner; revision: () => object }) {
+function DraftBlock(props: {
+  page: () => NewSessionPageOwner;
+  revision: () => object;
+  options: () => ReturnType<NewSessionPageOwner["composerOptions"]>;
+}) {
   const submission = () => props.page().submission;
   const place = () => props.page().place;
-  const options = () => props.page().composerOptions();
+  const placeOptions = createMemo((): NewSessionPlaceControlsOptions => ({
+    context: props.page().context,
+    data: props.page().data,
+    gateway: props.page().gateway,
+    place: place(),
+    submitting: submission().submitting,
+    pendingPlacement: Boolean(submission().pendingPlacement.sessionKey),
+    onConnectMachine: () => props.page().openConnectMachine(),
+    onNavigate: (route, routeOptions) => props.page().context?.navigate(route, routeOptions),
+    onFocusComposer: () =>
+      submission().composerTextarea.getTextarea()?.focus({ preventScroll: true }),
+    requestUpdate: () => props.page().requestUpdate(),
+  }));
   const permissionControl = (
     <Show when={!catalog.isTarget(props.page().data)}>
       <ChatPermissionPicker
@@ -102,24 +132,7 @@ function DraftBlock(props: { page: () => NewSessionPageOwner; revision: () => ob
             />
           </Show>
         }
-        placeSelect={
-          <NewSessionPlaceControls
-            params={{
-              context: props.page().context,
-              data: props.page().data,
-              gateway: props.page().gateway,
-              place: place(),
-              submitting: submission().submitting,
-              pendingPlacement: Boolean(submission().pendingPlacement.sessionKey),
-              onConnectMachine: () => props.page().openConnectMachine(),
-              onNavigate: (route, routeOptions) =>
-                props.page().context?.navigate(route, routeOptions),
-              onFocusComposer: () =>
-                submission().composerTextarea.getTextarea()?.focus({ preventScroll: true }),
-              requestUpdate: () => props.page().requestUpdate(),
-            }}
-          />
-        }
+        placeSelect={<NewSessionPlaceControls params={placeOptions()} />}
       />
       <Show when={place().worktree && !isWorktreeNameValid(place().worktreeName)}>
         <DraftError message={t("newSession.worktreeNameInvalid")} />
@@ -151,7 +164,11 @@ function DraftBlock(props: { page: () => NewSessionPageOwner; revision: () => ob
         />
       </Show>
       <NewSessionComposer
-        options={Object.assign(options(), { permissionControl, dictationStatus, voiceControl })}
+        options={Object.assign(props.options(), {
+          permissionControl,
+          dictationStatus,
+          voiceControl,
+        })}
       />
       <Show when={!catalog.isTarget(props.page().data)}>
         <NewSessionIncognitoNotice active={submission().visibility === "incognito"} />
@@ -170,6 +187,11 @@ function PageContent(_props: { data: NewSessionRouteData | undefined }, host: Pa
     revision();
     return owner;
   };
+  // Both draft presentations share one preparation per revision, not one per binding.
+  const options = createMemo(() => page().composerOptions());
+  // The retained Lit slot must not republish identical Solid inputs on each
+  // draft edit; the revision accessor already carries the changed state.
+  const draftProps = { page, revision, options };
   createEffect(revision, () =>
     untrack(() => {
       owner.updated();
@@ -194,6 +216,12 @@ function PageContent(_props: { data: NewSessionRouteData | undefined }, host: Pa
       owner.submission.setVisibility(visibility),
   };
   const completed = () => page().submission.completedSubmission;
+  const creationComposer = createMemo(() => {
+    const submission = page().submission;
+    const composer = submission.creationComposer;
+    // Rollback restores the initial composer; keep a second one only for retained input.
+    return submission.pendingMessage || composer?.hasInput ? composer : undefined;
+  });
   const userId = () => {
     const identity = page().context?.gateway.snapshot.selfUser?.identity;
     return identity?.type === "profile" ? identity.id : null;
@@ -223,7 +251,13 @@ function PageContent(_props: { data: NewSessionRouteData | undefined }, host: Pa
   return (
     <>
       <div
-        class={`new-session-page ${page().submission.pendingMessage ? "chat" : ""} ${page().submission.visibility === "incognito" ? "new-session-page--incognito" : ""}`}
+        class={[
+          "new-session-page",
+          {
+            chat: Boolean(page().submission.pendingMessage),
+            "new-session-page--incognito": page().submission.visibility === "incognito",
+          },
+        ]}
       >
         <LitContent value={renderSessionBackground(page().context, "new-session")} />
         <Show when={!catalog.isTarget(page().data)}>
@@ -248,21 +282,22 @@ function PageContent(_props: { data: NewSessionRouteData | undefined }, host: Pa
             <Show
               when={Boolean(completed())}
               fallback={
-                <LitContent
-                  value={renderWelcomeState({
+                <DraftWelcome
+                  sessions={page().context?.sessions}
+                  options={{
                     ...page().welcomeOptions(),
-                    composer: solidContent(DraftBlock, { page, revision }),
-                  })}
+                    composer: solidContent(DraftBlock, draftProps),
+                  }}
                 />
               }
             >
-              <DraftBlock page={page} revision={revision} />
+              <DraftBlock page={page} revision={revision} options={options} />
             </Show>
           )}
           onOpenImage={owner.setImageLightbox}
         />
         <CreationComposer
-          composer={page().submission.creationComposer}
+          composer={creationComposer()}
           onOpenImage={owner.setImageLightbox}
           renderRevision={revision()}
         />
@@ -349,6 +384,9 @@ defineSolidBridge<
 declare module "@solidjs/web" {
   namespace JSX {
     interface IntrinsicElements {
+      "openclaw-new-session-page": HTMLAttributes<PageHost> & {
+        "prop:data"?: NewSessionRouteData | undefined;
+      };
       "openclaw-chat-detail-panel": HTMLAttributes<
         HTMLElementTagNameMap["openclaw-chat-detail-panel"]
       > & {

@@ -301,11 +301,7 @@ async function releaseRetainedThread(
     retainedOwnerToken: retained.ownerToken,
     completion: Promise.resolve().then(() => {
       assertCurrent?.();
-      return withCurrent
-        ? retained.release(threadId, assertCurrent, withCurrent)
-        : assertCurrent
-          ? retained.release(threadId, assertCurrent)
-          : retained.release(threadId);
+      return retained.release(threadId, assertCurrent, withCurrent);
     }),
   };
   runtime.releasingThreads.set(threadId, transition);
@@ -447,6 +443,13 @@ export async function retainCodexAppServerLiveThread(
   return true;
 }
 
+export function readCodexLiveThreadEphemeralPolicy(
+  client: CodexAppServerClient,
+  threadId: string,
+): Readonly<CodexEphemeralThreadPolicy> | undefined {
+  return configuredClients.get(client)?.retainedThreads.get(threadId)?.ephemeralPolicy;
+}
+
 /** Transfer one idle subscription to its next turn or compaction without touching sibling threads. */
 export async function consumeCodexAppServerLiveThread(
   client: CodexAppServerClient,
@@ -561,11 +564,7 @@ function claimCodexAppServerThreadOwnership(
           return;
         }
         assertReleaseCurrent?.();
-        await (withCurrent
-          ? retained.release(releasedThreadId, assertReleaseCurrent, withCurrent)
-          : assertReleaseCurrent
-            ? retained.release(releasedThreadId, assertReleaseCurrent)
-            : retained.release(releasedThreadId));
+        await retained.release(releasedThreadId, assertReleaseCurrent, withCurrent);
       }),
     };
     runtime.releasingThreads.set(threadId, transition);

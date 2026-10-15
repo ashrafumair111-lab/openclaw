@@ -68,6 +68,7 @@ import type {
 import type { GitHubPublicationSourceOperations } from "./github-publication-source-contract.js";
 import type { OpenClawAgentDatabaseWorkerLeaseReceipt } from "./openclaw-agent-db-lease.js";
 import type { OpenClawStateLeaseLifecycleOperations } from "./openclaw-state-lease-context.js";
+import type { StateSchemaPublicationBlocker } from "./openclaw-state-schema-publication.js";
 import type { RegisteredStateWorkerOperations } from "./openclaw-state-worker-registry.js";
 import type { UserPreferenceWorkerOperations } from "./user-preferences.types.js";
 import type { WorkerOperations } from "./worker-operation-registry.js";
@@ -104,7 +105,10 @@ export type OpenClawStateWorkerOperations = RegisteredStateWorkerOperations &
       output: ReturnType<typeof recoverPendingWorktreesInWorker>;
     };
     "database.walMaintenance": { input: SqliteWalPeriodicRequest; output: SqliteWalPeriodicResult };
-    "deviceIdentity.read": { input: { identityKey: string }; output: DeviceIdentity | null };
+    "database.publishSchema": {
+      input: undefined;
+      output: StateSchemaPublicationBlocker | undefined;
+    };
     "deviceIdentity.load": { input: { identityKey: string }; output: DeviceIdentity };
     "sandboxRegistry.insertIfMissing": { input: SandboxRegistryInsert; output: void };
     "workspace.replaceAttestation": {
@@ -225,6 +229,7 @@ export type OpenClawStateWorkerRuntimeCommand = Exclude<
     type:
       | "database.inspectIdle"
       | "database.walMaintenance"
+      | "database.publishSchema"
       | "agentDatabases.releaseExitedLease"
       | "worktrees.reserveCapacity"
       | keyof RestartLifecycleWorkerOperations

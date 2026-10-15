@@ -411,7 +411,7 @@ export abstract class MemoryManagerSyncOps extends MemoryManagerSourceSyncOps {
         }
         if (!this.provider && this.fts.enabled && isMemoryEmbeddingOperationError(err)) {
           this.requestSessionIndexRetry();
-          this.syncOutcomes.recordActiveFailure(err);
+          this.syncOutcomes.recordFailure(err);
           log.warn(`memory embeddings unavailable; leaving memory index dirty: ${reason}`);
           return;
         }
@@ -471,7 +471,7 @@ export abstract class MemoryManagerSyncOps extends MemoryManagerSourceSyncOps {
       sessionsFullRetryDirty || sessionsReconcileDirty || sessionsDirtyFiles.size > 0;
     if (failure) {
       this.requestSessionIndexRetry(true);
-      this.syncOutcomes.recordActiveFailure(failure.error);
+      this.syncOutcomes.recordFailure(failure.error);
     }
     return true;
   }
@@ -566,7 +566,7 @@ export abstract class MemoryManagerSyncOps extends MemoryManagerSourceSyncOps {
     // in one short transaction so failed rebuilds leave the current index usable.
     const dbPath = resolveUserPath(this.settings.store.databasePath);
     const tempDbPath = `${dbPath}.memory-reindex-${randomUUID()}`;
-    const originalDb = this.db;
+    const originalDatabase = this.database;
     const originalRetryState = this.snapshotReindexRetryState();
     const withEmbeddings = this.syncProviderGeneration?.kind === "semantic";
     const shouldRetryMemoryOnFailure = this.sources.has("memory");
@@ -660,8 +660,8 @@ export abstract class MemoryManagerSyncOps extends MemoryManagerSourceSyncOps {
                 this.closed ||
                 this.publishedDatabase.closed ||
                 this.publishedDatabase.readOnly ||
-                this.publishedDatabase.db !== originalDb ||
-                !originalDb.isOpen
+                this.publishedDatabase !== originalDatabase ||
+                !originalDatabase.isOpen
               ) {
                 throw new Error("Memory publication owner changed before reindex publication");
               }

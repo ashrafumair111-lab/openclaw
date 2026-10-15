@@ -2,13 +2,13 @@
 
 import { render } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import "../components/macos-titlebar-controls.runtime.ts";
 import "../components/modal-dialog.ts";
-import "../components/sidebar-update-card.ts";
+import "../components/sidebar-update-card.tsx";
+import { createTooltip, settleTooltip } from "../components/tooltip.test-support.ts";
+import { createNavigationPreferencesFixture } from "../test-helpers/application-context-fixtures.ts";
 import { getRenderedModalDialog, installDialogPolyfill } from "../test-helpers/modal-dialog.ts";
 import { createShellOwner } from "./app-host-solid.test-support.ts";
 import { resetAppHostTestGlobals, type ShellKeyboardState } from "./app-host.test-support.ts";
-import type { ShellViewCallbacks } from "./app-shell-view-callbacks.ts";
 import type { ApplicationContext } from "./context.ts";
 import {
   handleNavDrawerKeydown,
@@ -41,16 +41,6 @@ type TestWebKitWindow = Window & {
   };
 };
 
-type MacosTitlebarControlsState = HTMLElement & {
-  navCollapsed: boolean;
-  historyOnly: boolean;
-  newSessionDisabledReason?: string;
-  onToggleSidebar?: () => void;
-  onOpenPalette?: () => void;
-  onOpenNewSession?: () => void;
-  updateComplete: Promise<boolean>;
-};
-
 function nativeSessionContext(
   navigate: ReturnType<typeof vi.fn>,
   selectedId: string,
@@ -77,6 +67,34 @@ afterEach(() => {
 });
 
 describe("OpenClaw native shell", () => {
+  it("focuses the navigation drawer without a tooltip claiming Escape", async () => {
+    vi.stubGlobal("matchMedia", () => ({ matches: true }));
+    const shell = createShellOwner();
+    const context = {
+      ...nativeSessionContext(vi.fn(), "research"),
+      navigation: createNavigationPreferencesFixture(),
+    };
+    Object.assign(shell, { runtime: { context } });
+    const drawer = document.createElement("nav");
+    drawer.className = "shell-nav";
+    const { tooltip, trigger } = createTooltip("Workspace options");
+    Object.defineProperty(trigger, "checkVisibility", { value: () => true });
+    drawer.append(tooltip);
+    shell.element.append(drawer);
+    document.body.append(shell.element);
+    try {
+      await settleTooltip(tooltip);
+      shell.toggleNavigationSurface();
+      shell.afterCommit();
+      await shell.updateComplete;
+      await settleTooltip(tooltip);
+      expect(document.activeElement).toBe(trigger);
+      expect(tooltip.hasAttribute("open")).toBe(false);
+    } finally {
+      shell.element.remove();
+    }
+  });
+
   it.each(["MacIntel", "Win32"])(
     "uses only the platform sidebar modifier on %s without consuming text navigation",
     (platform) => {
@@ -423,70 +441,6 @@ describe("OpenClaw native shell", () => {
     } finally {
       drawer.remove();
     }
-  });
-
-  it("keeps the new-thread control in the native titlebar only while collapsed", async () => {
-    vi.stubGlobal(
-      "matchMedia",
-      vi.fn(() => ({ matches: true })),
-    );
-    const shell = createShellOwner() as unknown as {
-      element: HTMLElement;
-      runtime: { context: ApplicationContext };
-      viewCallbacks: ShellViewCallbacks;
-      navDrawerTrigger: HTMLElement | null;
-      navDrawerOpen: boolean;
-    };
-    shell.runtime = { context: {} as ApplicationContext };
-    const drawerTrigger = shell.element.appendChild(document.createElement("button"));
-    drawerTrigger.className = "topbar-nav-toggle";
-    Object.defineProperty(drawerTrigger, "checkVisibility", { value: () => true });
-    const onOpenPalette = vi.fn();
-    const onOpenNewSession = vi.fn();
-    const controls = document.createElement(
-      "openclaw-macos-titlebar-controls",
-    ) as unknown as MacosTitlebarControlsState;
-    controls.navCollapsed = false;
-    controls.historyOnly = false;
-    controls.onToggleSidebar = shell.viewCallbacks.toggleSidebar;
-    controls.onOpenPalette = onOpenPalette;
-    controls.onOpenNewSession = onOpenNewSession;
-    document.body.append(controls);
-    await controls.updateComplete;
-
-    controls.querySelector<HTMLButtonElement>(".macos-titlebar-controls__sidebar-toggle")?.click();
-    expect(shell.navDrawerOpen).toBe(true);
-    expect(shell.navDrawerTrigger).toBe(drawerTrigger);
-    controls.querySelector<HTMLButtonElement>(".macos-titlebar-controls__search")?.click();
-    expect(controls.querySelector(".macos-titlebar-controls__new-session")).toBeNull();
-
-    controls.navCollapsed = true;
-    await controls.updateComplete;
-    controls.querySelector<HTMLButtonElement>(".macos-titlebar-controls__new-session")?.click();
-
-    expect(onOpenPalette).toHaveBeenCalledOnce();
-    expect(onOpenNewSession).toHaveBeenCalledOnce();
-    controls.remove();
-  });
-
-  it("disables the native titlebar new-session control with its access reason", async () => {
-    const onOpenNewSession = vi.fn();
-    const controls = document.createElement(
-      "openclaw-macos-titlebar-controls",
-    ) as unknown as MacosTitlebarControlsState;
-    controls.navCollapsed = true;
-    controls.newSessionDisabledReason = "Operator write access is required.";
-    controls.onOpenNewSession = onOpenNewSession;
-    document.body.append(controls);
-    await controls.updateComplete;
-
-    const button = controls.querySelector<HTMLButtonElement>(
-      ".macos-titlebar-controls__new-session",
-    );
-    expect(button?.disabled).toBe(true);
-    button?.click();
-    expect(onOpenNewSession).not.toHaveBeenCalled();
-    controls.remove();
   });
 
   it("retains a native new-session request until a context exists", () => {

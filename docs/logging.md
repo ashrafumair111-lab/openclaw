@@ -342,6 +342,13 @@ results before repeating them.
 
 ### Targeted model transport diagnostics
 
+Prompt-cache history warnings identify the first changed message and bounded
+field paths, such as `content[0].thinkingSignature` or `content[0].arguments`.
+They report no message content, argument values, or signature bytes. Unknown
+extension keys appear as `other`; blocks beyond the retained diagnostic prefix
+appear as `content[remaining]`. A history warning identifies changed model
+context; it does not alone prove why a provider's cache-read tokens dropped.
+
 When debugging provider calls, use targeted environment flags instead of raising
 all logs to `debug`:
 
@@ -364,7 +371,8 @@ Available flags:
   and message text may still be present.
 - `OPENCLAW_DEBUG_SSE=events`: emit first-event and stream-completion timing.
 - `OPENCLAW_DEBUG_SSE=peek`: also emit the first five redacted SSE event
-  payloads, capped per event.
+  payloads, capped per event, on transports that support payload peeking.
+  Responses transports remain metadata-only.
 - `OPENCLAW_DEBUG_CODE_MODE=1`: emit code-mode model-surface diagnostics,
   including bounded activation facts, the final visible surface, and names of
   provider-native tools filtered because code mode owns the tool surface.
@@ -377,8 +385,8 @@ enabled.
 
 `[model-fetch]` start and response metadata (provider, API, model, status,
 latency, and request fields such as method, URL, timeout, proxy, and policy)
-uses `debug` by default. Responses with a non-2xx status or at least one second
-of elapsed time remain at `info`, and transport failures remain warnings.
+uses `debug` by default. Responses with a non-2xx status remain at `info`,
+and transport failures remain warnings.
 `[model-fetch]` and `[responses]` report caller-signaled `AbortError` as `aborted`
 at `debug` (or `info` with the targeted flags), rather than as provider failures.
 The requesting layer owns the final cancellation or timeout outcome; an SDK can
@@ -387,6 +395,19 @@ reasons and failures without a caller abort remain warnings.
 Elapsed time includes local-service preparation and waiting for response headers,
 but excludes streaming the response body. The targeted debug flags above promote
 start and fast successful response metadata to `info` when troubleshooting.
+
+Embedded model requests attach the raw `sessionKey`, `runId`, numbered
+`requestId`, and `requestNumber` to fetch and transport logs. String identifiers
+use lossless JSON escaping so control characters cannot forge log lines; their
+values are not redacted. The request sequence
+continues across same-run retries. Fetch response logs include the HTTP
+`httpRequestId` when supplied by the provider. Responses SSE and WebSocket
+`stream_start` / `stream_done` logs record the actual requested tier and
+`max_output_tokens`; completion also records the response ID, served tier,
+provider-reported output and reasoning token counts, stream duration, total
+request elapsed time, and terminal/incomplete reason. Unknown usage stays
+`unknown`, not zero. These metadata fields contain no prompt or response text;
+raw identifiers are retained locally and follow normal redaction at log egress.
 
 `[anthropic] replayed thinking dropped: N block(s)` is a warning when Anthropic
 reports dropping invalidated thinking from replay. It includes the mismatch
@@ -897,6 +918,16 @@ and scheduling delays; they do not establish lock contention. The separate
 errors. These elapsed durations do not measure SQL CPU time or establish a
 causal link to a nearby request.
 
+Hold warnings label the callback as `callbackKind: "application-transaction"`:
+OpenClaw's transaction body, not a SQLite busy handler or SQL function.
+`phases.databaseAdmissionWaitMs` measures synchronous metadata exchanges with the
+host, separately from authority waits in `hostAdmissionWaitMs`. Metadata waits
+during COMMIT belong to this field and are excluded from the hold's `commitMs`.
+The legacy
+`sqlMs` field excludes both waits and commit time, but includes JavaScript between
+SQL statements. The default 1,000 ms logging threshold does not establish a
+one-second timeout.
+
 Older builds report `session.reclamation.commit-settlement` for a parent-side
 synchronous SQLite check after authorizing a reclamation or cold-storage commit.
 The parent now atomically accepts the commit after checking live authority and
@@ -942,6 +973,20 @@ The timing fields separate the elapsed interval into:
 These fields are available when the queued callback started and finished;
 `elapsedMs` records the total duration. The warning's console line carries the
 same fields as `key=value` pairs; `openclaw logs --json` shows the original `raw` record.
+
+`slow agent database reservation` covers direct, Worker, and ordered-read
+reservations when `queueWaitMs + writerExecutionMs` reaches 1000 ms, even when
+execution itself is fast. Completion delay alone does not trigger this warning.
+When a writer was holding the lane at enqueue, `blockingOperation` and optional
+`blockingCaller` identify that holder; `blockingWorkerOperations` lists its bounded
+Worker operation labels. This is the holder observed at enqueue, not a breakdown
+of every writer ahead in the queue. Reentrant borrowing does not emit a second
+reservation warning. No reservation warning is emitted below the threshold.
+
+Prometheus already exposes `openclaw_worker_queue_wait_seconds` with
+`kind="sqlite_writer"` and bounded `request_class` labels. It measures Worker
+request enqueue-to-dispatch time; an outer reservation wait before that enqueue
+is visible in the reservation warning, not in this Worker histogram.
 
 Use `operation` to locate the owning code path. It does not identify a specific
 SQL statement, measure CPU time or lock contention, or establish that a nearby
@@ -1021,6 +1066,16 @@ checkpoint mode or timeout, or archive-retention behavior.
 
 ### Slow reply preparation
 
+Before acknowledgement, `slow chat send` reports requests taking at least one
+second, including the first turn of `sessions.create`. Its `detail.admission.*`
+fields separate work admission and validation inside that admission.
+The `detail.persist.*` fields separate pending input staging,
+transcript persistence, and dashboard authority preparation.
+These fixed labels contain no message content or session identifiers and require
+no diagnostic flag. Durations include awaited work: `admission.revalidate` is
+nested inside `admission.work`, so their values must not be added together or
+treated as SQLite execution time.
+
 When a reply spends a long time preparing, inspect the normal Gateway logs:
 
 ```bash
@@ -1095,6 +1150,7 @@ session's previous request), `responseId`, `sessionId`, and `promptTokens` when
 reported by the provider. The previous/current wire summaries include the
 requested `serviceTier` so tier switches can be distinguished from cache loss
 on an unchanged route.
+Drops classified as `unattributed` use `debug`; attributed drops remain warnings.
 `providerPrefix` compares final encoded request segments against the last request
 with usable cache-read usage: system instructions, tools, history messages, and
 other request parameters. It names the first differing segment or `prefix-match`
@@ -1113,9 +1169,9 @@ baselines. No prompt content or digest values appear in these warnings.
 OpenAI service-tier rejection and downgrade records include the requested model,
 account route, run/session IDs, original requested tier, and final wire-request
 tier. Terminal responses also include the served tier, response ID/model, total
-input tokens (including cached input), and cached tokens when reported. Each
-downgraded request is logged even when the account-catalog observation is
-unchanged. Join its response ID to a prompt-cache warning to inspect the same
+input tokens (including cached input), and cached tokens when reported. Changed
+account-catalog observations log at `info`; repeated observations use `debug`.
+Join the response ID to a prompt-cache diagnostic to inspect the same
 completion; a downgrade alone does not prove a cache miss. These are raw file-log
 fields and follow the usual redaction rules at egress.
 
@@ -1140,6 +1196,12 @@ OpenTelemetry. Direct file reads are raw: protect and review them before sharing
 Log messages should contain IDs, sizes, and outcomes, never message text, prompts,
 tool arguments, or tool results. Config snapshots, audit output, and
 credential-bearing URLs and command-line options retain their credential masking.
+
+Gateway agent ingress returns replies through results and session transcripts
+without echoing them to service logs. Nested-agent replies are not printed to
+logs. Interactive `openclaw agent` commands still print replies to stdout.
+Stalled and stuck session diagnostics retain session IDs, ages, tool names, cron
+metadata, and recovery outcomes without copying assistant replies from transcripts.
 
 `logging.redactPatterns` replaces the default regex string list for logs and
 diagnostics. Built-in structural protections for form bodies, structured

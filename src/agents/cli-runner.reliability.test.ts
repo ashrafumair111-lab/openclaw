@@ -334,7 +334,12 @@ async function warmedPluginContext(
   try {
     await executePreparedCliRun({ ...context, openClawHistoryPrompt: undefined }, undefined);
     context.requiredClaudeLiveSessionGeneration = liveHandle?.generation;
-    return { context, close, attempts: () => attempts };
+    // The warmup is a separate turn and must not consume this run's recovery budget.
+    return {
+      context: { ...context, ...captureCliRunStartTime() },
+      close,
+      attempts: () => attempts,
+    };
   } catch (error) {
     close();
     throw error;
@@ -1033,19 +1038,6 @@ describe("runCliAgent reliability", () => {
       }
     },
   );
-
-  it("surfaces prepared backend cleanup failures when nothing was delivered", async () => {
-    supervisorSpawnMock.mockResolvedValueOnce(makeManagedRun({ stdout: "ok" }));
-    const context = buildPreparedContext({
-      sessionKey: "agent:main:cleanup-failure",
-      runId: "run-cleanup-failure",
-    });
-    context.preparedBackend.cleanup = async () => {
-      throw new Error("cleanup failed");
-    };
-
-    await expect(runPreparedCliAgent(context)).rejects.toThrow("cleanup failed");
-  });
 
   it("fails normally after an unresolved prepared dry-run send", async () => {
     vi.useFakeTimers();

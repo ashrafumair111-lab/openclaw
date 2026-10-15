@@ -35,6 +35,7 @@ import { defineSolidBridge, type SolidBridgeElement } from "../../lit/solid-brid
 import { CustomPluginUiDisabled } from "../../plugins/control-ui-disabled.solid.tsx";
 import { PluginContribution } from "../../plugins/control-ui-view.solid.tsx";
 import { LazyViewError } from "../solid/lazy-view-error.tsx";
+import type { MenuHandle } from "../solid/menu.tsx";
 import { BoardMcpAppContent } from "./board-mcp-app-content.tsx";
 import { BoardMcpAppLifecycle } from "./board-mcp-app-lifecycle.ts";
 import {
@@ -43,7 +44,6 @@ import {
 } from "./board-widget-capabilities.solid.tsx";
 import {
   BOARD_SIZE_PRESETS,
-  closeBoardWidgetMenu,
   type BoardWidgetCellHandle,
   type BoardWidgetCellMethods,
   type BoardWidgetCellProps,
@@ -51,12 +51,11 @@ import {
 import {
   BoardDisabledPlugin,
   BoardCoreWidget,
-  BoardWidgetMenu,
   BoardWidgetRejected,
 } from "./board-widget-cell-render.solid.tsx";
 import { BoardWidgetError } from "./board-widget-error.tsx";
 import { BoardWidgetFrameLifecycle } from "./board-widget-frame.tsx";
-import "../web-awesome.ts";
+import { BoardWidgetMenu } from "./board-widget-menu.tsx";
 
 const loadMcpAppView = () => import("../mcp-app-view-registration.ts");
 const cells = new WeakMap<HTMLElement, BoardWidgetCellHandle>();
@@ -79,6 +78,7 @@ function BoardWidgetCellContent(
   };
   let actionError = "";
   let actionPending = false;
+  let menu: MenuHandle | undefined;
   let bodyErrored = false;
   let resetBodyError: (() => void) | undefined;
   let connected = true;
@@ -99,6 +99,22 @@ function BoardWidgetCellContent(
     subscribe: (owner, notify) => owner?.subscribe?.(notify) ?? (() => {}),
     equality: "revision",
   });
+  // Usage and other Gateway publications do not change a frame's connection
+  // authority. Sample mutable lifecycle facts before comparing the binding.
+  const gatewayBinding = createMemo(
+    () => {
+      const snapshot = gateway.read();
+      return [
+        snapshot?.phase,
+        snapshot?.client,
+        snapshot?.hello,
+        snapshot?.restartPending,
+        snapshot?.suspensionPhase,
+        context?.gateway.connectionRevision,
+      ] as const;
+    },
+    { equals: (previous, next) => previous.every((value, index) => value === next[index]) },
+  );
   const loader = new LazyCustomElementRequestController({ requestUpdate });
   const loadError = () => {
     revision();
@@ -142,10 +158,11 @@ function BoardWidgetCellContent(
     };
   });
   const activeKinds = () => gateway.read()?.hello?.controlUiWidgetKinds ?? [];
-  const contribution = () =>
+  const contribution = createMemo(() =>
     props.widget?.contentKind === "plugin" && !props.widget.frameUrl
       ? getPluginWidgetKindContribution(props.widget.pluginKind, activeKinds())
-      : null;
+      : null,
+  );
 
   async function runAction(action: () => Promise<void>, failureMessage?: string) {
     if (actionPending || props.busy) {
@@ -154,7 +171,7 @@ function BoardWidgetCellContent(
     actionPending = true;
     actionError = "";
     requestUpdate();
-    closeBoardWidgetMenu(host);
+    menu?.close();
     try {
       await action();
     } catch (error) {
@@ -223,7 +240,7 @@ function BoardWidgetCellContent(
         props.sessionKey,
         active(),
         contribution(),
-        gateway.read(),
+        gatewayBinding(),
       ] as const,
     () =>
       untrack(() => {
@@ -294,7 +311,7 @@ function BoardWidgetCellContent(
   );
   let observedErrorBinding = false;
   createEffect(
-    () => [props.widget, props.widgetFrameUrl, plugins.revision(), gateway.revision()] as const,
+    () => [props.widget, props.widgetFrameUrl, plugins.revision(), gatewayBinding()] as const,
     () => {
       // The first observation belongs to the initial render, including its error fallback.
       if (observedErrorBinding && bodyErrored) {
@@ -602,7 +619,10 @@ function BoardWidgetCellContent(
                 widget={props.widget!}
                 tabs={props.tabs ?? []}
                 disabled={props.busy || state().pending}
-                onSelect={(event) => selectMenuItem(event.detail.item.value)}
+                onSelect={selectMenuItem}
+                ref={(handle) => {
+                  menu = handle;
+                }}
               />
             </Show>
           </header>

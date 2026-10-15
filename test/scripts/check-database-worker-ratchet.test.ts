@@ -30,12 +30,12 @@ it("does not exempt a kernel through an unregistered worker-named runtime wrappe
   const root = tempDirs.make("openclaw-sqlite-entry-ratchet-");
   const relative = "src/state/openclaw-state-db-maintenance.ts";
   const sources = {
-    [relative]: `export function writeCurrentStateSchemaMetadata() {
+    [relative]: `export function writeUnreviewedStateMetadata() {
       return executeSqliteQuerySync(query);
     }`,
     "src/unregistered.worker.ts": `
-      import { writeCurrentStateSchemaMetadata } from './state/openclaw-state-db-maintenance.js';
-      export function writeSchema() { return writeCurrentStateSchemaMetadata(); }
+      import { writeUnreviewedStateMetadata } from './state/openclaw-state-db-maintenance.js';
+      export function writeSchema() { return writeUnreviewedStateMetadata(); }
     `,
     "src/gateway/consumer.ts": `
       import { writeSchema } from '../unregistered.worker.js';
@@ -49,7 +49,34 @@ it("does not exempt a kernel through an unregistered worker-named runtime wrappe
   }
   expect(inventory(root).find((row) => row.file === relative)).toMatchObject({
     tier: "T1",
-    calls: [expect.objectContaining({ operation: "writeCurrentStateSchemaMetadata" })],
+    calls: [expect.objectContaining({ operation: "writeUnreviewedStateMetadata" })],
+  });
+});
+
+it("classifies only the synchronous Doctor enrollment branch as one-shot", () => {
+  const root = tempDirs.make("openclaw-sqlite-doctor-enrollment-");
+  const relative = "src/agents/auth-profiles/authorization-enrollment-runtime.ts";
+  const file = path.join(root, relative);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(
+    file,
+    `export function enrollOwnedAuthProfileAuthorization(params) {
+      if (params.context.maintenanceScope?.ownsSchemaMaintenance) {
+        runOpenClawAgentWriteTransaction(callback);
+        return () => runOpenClawAgentWriteTransaction(callback);
+      } else {
+        runOpenClawAgentWriteTransaction(callback);
+      }
+    }`,
+  );
+  const rows = inventory(root);
+  expect(rows.map(({ tier, calls }) => [tier, calls.length])).toEqual([
+    ["T1", 2],
+    ["T3", 1],
+  ]);
+  expect(rows.find(({ tier }) => tier === "T3")?.calls[0]).toMatchObject({
+    operation: "enrollOwnedAuthProfileAuthorization",
+    guards: ["params.context.maintenanceScope?.ownsSchemaMaintenance"],
   });
 });
 

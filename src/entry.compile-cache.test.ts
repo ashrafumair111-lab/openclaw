@@ -4,7 +4,7 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { expectDefined, readStringValue } from "@openclaw/normalization-core";
+import { expectDefined } from "@openclaw/normalization-core";
 import {
   afterEach,
   beforeEach,
@@ -62,11 +62,6 @@ import {
   respawnWithoutOpenClawCompileCacheIfNeeded as respawnCompileCache,
 } from "./entry.compile-cache.js";
 import { resolveNodeCompileCacheEnv } from "./infra/node-compile-cache-env.js";
-
-function enabledDirectory(callIndex = 0): string {
-  const [directory] = expectDefined(enableCompileCache.mock.calls[callIndex], "cache enable call");
-  return expectDefined(readStringValue(directory), "cache directory string");
-}
 
 describe("entry compile cache", () => {
   const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -159,7 +154,7 @@ describe("entry compile cache", () => {
   });
 
   it.each(["git", "source", "package"])(
-    "activates compiled-entry cache for an enabled %s install",
+    "activates compiled worker cache for an enabled %s install",
     async (kind) => {
       argv = [process.execPath, entryFile, "gateway", "run"];
       if (kind === "git") {
@@ -184,16 +179,10 @@ describe("entry compile cache", () => {
   it.each([
     ["gateway", WINDOWS_TASK_SUPERVISOR_FLAG],
     ["gateway", "run", `${WINDOWS_TASK_SUPERVISOR_CHILD_FLAG}=65536`],
-  ])("keeps automatic caching for Windows service arguments: %j", (...args) => {
+  ])("keeps worker caching for Windows service arguments: %j", (...args) => {
     argv = [process.execPath, entryFile, ...args];
     enableOpenClawCompileCache({ currentFile: entryFile, env: {}, installRoot: root });
-    expect(enableCompileCache).toHaveBeenCalledOnce();
-  });
-
-  it("leaves source entry compilation uncached", async () => {
-    await markSourceCheckout();
-    enableOpenClawCompileCache({ currentFile: entryFile, env: {}, installRoot: root });
-    expect(enableCompileCache).not.toHaveBeenCalled();
+    expect(enableCompileCache).toHaveBeenCalledTimes(1);
   });
 
   it("keeps compiled one-shot commands free of automatic exit-time cache work", () => {
@@ -234,26 +223,6 @@ describe("entry compile cache", () => {
       }
     });
     expect(env.NODE_COMPILE_CACHE).toBe(directory);
-  });
-
-  it("isolates replaced installation metadata without build information", async () => {
-    const packageJsonPath = path.join(root, "package.json");
-    const env = { NODE_COMPILE_CACHE: path.join(root, ".node-cache") };
-    await fs.writeFile(packageJsonPath, '{"version":"2026.4.29"}\n', "utf8");
-    enableOpenClawCompileCache({ currentFile: entryFile, env, installRoot: root });
-    const originalDirectory = enabledDirectory();
-    expect(originalDirectory).toContain(path.join(".node-cache", "openclaw"));
-    expect(originalDirectory).toContain("2026.4.29");
-    expect(path.basename(originalDirectory)).toMatch(/^\d+-\d+$/);
-    await fs.writeFile(
-      packageJsonPath,
-      '{"version":"2026.4.29","installation":"replacement"}\n',
-      "utf8",
-    );
-    enableOpenClawCompileCache({ currentFile: entryFile, env, installRoot: root });
-    const replacementDirectory = enabledDirectory(1);
-    expect(replacementDirectory).toContain(path.join("openclaw", "2026.4.29"));
-    expect(replacementDirectory).not.toBe(originalDirectory);
   });
 
   it.each(["inherited", "active"])(

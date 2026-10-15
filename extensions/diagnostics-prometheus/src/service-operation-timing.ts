@@ -2,6 +2,13 @@ import type { DiagnosticEventMetadata, DiagnosticEventPayload } from "../api.js"
 import { seconds } from "./prometheus-format.js";
 import type { PrometheusMetricStore } from "./prometheus-metric-store.js";
 
+// Preserve existing le series while narrowing RPC quantile interpolation through 30 seconds.
+const RPC_DURATION_BUCKETS_SECONDS = [
+  0.005, 0.01, 0.0125, 0.015, 0.02, 0.025, 0.03, 0.04, 0.05, 0.06, 0.08, 0.1, 0.125, 0.15, 0.2,
+  0.25, 0.3, 0.4, 0.5, 0.6, 0.8, 1, 1.25, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10, 12.5, 15, 20, 25, 30, 60,
+  120, 300, 600,
+];
+
 const RESPONSE_BYTE_BUCKETS = Array.from({ length: 17 }, (_, index) => 1024 * 2 ** index);
 const HEAP_DELTA_BYTE_BUCKETS = [
   ...RESPONSE_BYTE_BUCKETS.toReversed().map((bytes) => -bytes),
@@ -68,8 +75,13 @@ export function recordOperationTimingEvent(
     case "diagnostic.gc":
       store.histogram(
         "openclaw_gc_duration_seconds",
-        "Elapsed garbage collection duration in seconds for the hosting JavaScript isolate.",
-        {},
+        "Elapsed garbage collection duration in seconds by collection kind, callback flags, and isolate role.",
+        {
+          kind: evt.kind ?? "unknown",
+          reason: evt.reason ?? "other",
+          thread: evt.thread ?? "main",
+          ...(evt.workerSlot === undefined ? {} : { slot: String(evt.workerSlot) }),
+        },
         seconds(evt.durationMs),
       );
       return;
@@ -142,6 +154,49 @@ export function recordOperationTimingEvent(
           "Authenticated Gateway WebSocket requests received.",
           labels,
         );
+        if (evt.method === "models.list" && evt.modelsList) {
+          const catalog = evt.modelsList;
+          store.counter(
+            "openclaw_models_list_requests_total",
+            "Model catalog requests by client kind and bounded request shape.",
+            {
+              client_kind: catalog.clientKind,
+              source: catalog.source,
+              view: catalog.view,
+              scope: catalog.scope,
+              refresh: String(catalog.refresh),
+              prepared_only: String(catalog.preparedOnly),
+            },
+          );
+        }
+        if (evt.method === "sessions.list" && evt.sessionsList) {
+          const sessions = evt.sessionsList;
+          store.counter(
+            "openclaw_sessions_list_requests_total",
+            "Session list requests by client kind and bounded request shape.",
+            {
+              client_kind: sessions.clientKind,
+              source: sessions.source,
+              caller_source: sessions.callerSource,
+              row_mode: sessions.rowMode,
+              filter: sessions.filter,
+            },
+          );
+        }
+        if (evt.method === "cron.list" && evt.cronList) {
+          const cron = evt.cronList;
+          store.counter(
+            "openclaw_cron_list_requests_total",
+            "Cron list requests by client kind and bounded request shape.",
+            {
+              client_kind: cron.clientKind,
+              source: cron.source,
+              scope: cron.scope,
+              compact: String(cron.compact),
+              page: cron.page,
+            },
+          );
+        }
         return;
       }
       if (evt.phase === "response" && (evt.outcome === "ok" || evt.outcome === "error")) {
@@ -167,6 +222,7 @@ export function recordOperationTimingEvent(
           "Elapsed time until the first Gateway RPC response is sent.",
           labels,
           seconds(evt.durationMs),
+          RPC_DURATION_BUCKETS_SECONDS,
         );
       } else if (evt.phase === "handler") {
         if (evt.heapDeltaBytes !== undefined) {
@@ -188,12 +244,14 @@ export function recordOperationTimingEvent(
           "Gateway RPC handler duration until return or throw.",
           labels,
           seconds(evt.durationMs),
+          RPC_DURATION_BUCKETS_SECONDS,
         );
         store.histogram(
           "openclaw_gateway_rpc_admission_seconds",
           "Elapsed time from Gateway RPC receipt until handler invocation.",
           labels,
           seconds(evt.admissionMs),
+          RPC_DURATION_BUCKETS_SECONDS,
         );
       } else if (evt.phase === "dispatch") {
         store.histogram(
@@ -201,6 +259,7 @@ export function recordOperationTimingEvent(
           "Gateway operator request start queue wait.",
           labels,
           seconds(evt.queueWaitMs),
+          RPC_DURATION_BUCKETS_SECONDS,
         );
       }
     }

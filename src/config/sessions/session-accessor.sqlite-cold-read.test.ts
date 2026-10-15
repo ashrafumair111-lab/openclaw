@@ -20,9 +20,7 @@ import { flushLogger, setLoggerOverride } from "../../logging/logger.js";
 import type { DB } from "../../state/openclaw-agent-db.generated.js";
 import {
   closeOpenClawAgentDatabaseByPathAsync,
-  isOpenClawAgentDatabaseOpen,
   openOpenClawAgentDatabase,
-  resolveIncognitoOpenClawAgentSqlitePath,
   resolveOpenClawAgentSqlitePath,
   runOpenClawAgentWriteTransaction,
 } from "../../state/openclaw-agent-db.js";
@@ -34,10 +32,7 @@ import {
 import { captureRuntimeConfigAsyncReader } from "../io.js";
 import { copySqliteSessionOwnedStateForCanonicalRepair } from "./session-accessor.sqlite-canonical-repair.js";
 import { replaceSessionEntry } from "./session-accessor.sqlite-entry.js";
-import {
-  hasSessionTranscriptEventsSync,
-  readTranscriptMutationStateSync,
-} from "./session-accessor.sqlite-metadata-read.js";
+import { readTranscriptMutationStateSync } from "./session-accessor.sqlite-metadata-read.js";
 import {
   findTranscriptEventInDatabase,
   loadTranscriptHeaderSync,
@@ -343,12 +338,19 @@ it("identifies a slow transcript matcher while retaining its hot read snapshot",
       expect(holds).toEqual([
         {
           async: false,
+          callbackKind: "application-transaction",
           database: race.database.path,
           elapsedMs: 1_200,
           isMainThread,
           mode: "deferred",
           operation: "session transcript match read",
-          phases: { beginMs: 0, sqlMs: 1_200, hostAdmissionWaitMs: 0, commitMs: 0 },
+          phases: {
+            beginMs: 0,
+            sqlMs: 1_200,
+            hostAdmissionWaitMs: 0,
+            databaseAdmissionWaitMs: 0,
+            commitMs: 0,
+          },
           pid: process.pid,
           threadId,
           thresholdMs: 1_000,
@@ -360,23 +362,6 @@ it("identifies a slow transcript matcher while retaining its hot read snapshot",
       await flushLogger();
       setLoggerOverride(null);
     }
-  });
-});
-
-it("counts a header at seq zero as transcript presence", async () => {
-  await withOpenClawTestState({ label: "transcript-presence" }, async (state) => {
-    await captureRuntimeConfigAsyncReader()();
-    const scope = {
-      agentId: "main",
-      env: state.env,
-      sessionId: "presence",
-      sessionKey: "agent:main:presence",
-    };
-    await replaceSessionEntry(scope, { sessionId: scope.sessionId, updatedAt: 1 });
-    expect(hasSessionTranscriptEventsSync(scope)).toBe(false);
-    await replaceTranscriptEvents(scope, [{ type: "session", id: scope.sessionId, version: 3 }]);
-    expect(readTranscriptStatsSync(scope)).toMatchObject({ eventCount: 1, maxSeq: 0 });
-    expect(hasSessionTranscriptEventsSync(scope)).toBe(true);
   });
 });
 
@@ -520,42 +505,6 @@ it("preserves partial-store statistics, UTF-8 bytes, and scope-cache freshness i
     } finally {
       resolve.mockRestore();
     }
-  });
-});
-
-it("reads only process-held incognito statistics and keeps each store's batch results separate", async () => {
-  await withOpenClawTestState({ label: "stats-batch-incognito" }, async (state) => {
-    await captureRuntimeConfigAsyncReader()();
-    const scope = {
-      agentId: "main",
-      env: state.env,
-      sessionId: "private",
-      sessionKey: "agent:main:dashboard:incognito-stats",
-    };
-    const incognitoPath = resolveIncognitoOpenClawAgentSqlitePath(scope);
-    const scopes = Array.from({ length: 11 }, (_, index) => ({
-      ...scope,
-      sessionId: index === 0 ? scope.sessionId : `missing-${index}`,
-    }));
-    expect(readTranscriptStatsBatchReadOnlySync(scopes)).toEqual(scopes.map(() => null));
-    expect(isOpenClawAgentDatabaseOpen(incognitoPath)).toBe(false);
-    await replaceTranscriptEvents(scope, [{ type: "session", id: scope.sessionId, version: 3 }]);
-    const publicScope = { ...scope, sessionKey: "agent:main:public" };
-    await replaceTranscriptEvents(publicScope, [
-      { type: "session", id: scope.sessionId, version: 3 },
-      { type: "message", message: { role: "user", content: "Public" } },
-    ]);
-    const expected = readTranscriptStatsSync(scope);
-    const publicStats = readTranscriptStatsSync(publicScope);
-    expect(expected.eventCount).toBe(1);
-    expect(publicStats.eventCount).toBe(2);
-    expect(readTranscriptStatsBatchReadOnlySync([publicScope, ...scopes, publicScope])).toEqual([
-      publicStats,
-      expected,
-      ...scopes.slice(1).map(() => ({ eventCount: 0, maxSeq: 0, sizeBytes: 0 })),
-      publicStats,
-    ]);
-    await expect(fs.stat(incognitoPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
 

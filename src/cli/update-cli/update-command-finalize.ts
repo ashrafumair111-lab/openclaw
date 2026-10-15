@@ -4,7 +4,7 @@ import {
   readConfigFileSnapshot,
 } from "../../config/config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { readResolvedDeferredPluginMigrationWarnings } from "../../infra/deferred-plugin-migration-warnings.js";
+import { readRetiredDeferredPluginMigrationWarnings } from "../../infra/deferred-plugin-migration-warnings.js";
 import { readInstallOwner } from "../../infra/install-owner.js";
 import { tryProcessCwd } from "../../infra/safe-cwd.js";
 import {
@@ -34,7 +34,7 @@ import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import { withCommandProcessScope } from "../../process/exec-spawn.js";
 import { createNonExitingRuntime, defaultRuntime } from "../../runtime.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
-import { assertOpenClawStateWriteAllowedAtPath } from "../../state/openclaw-state-ownership.js";
+import { assertOpenClawStateWriteAllowedAtPath } from "../../state/openclaw-state-ownership-preflight.js";
 import { formatCliCommand } from "../command-format.js";
 import { exitCliAfterOutput } from "../one-shot-exit.js";
 import { retainCliProcessJobUntilExit } from "../runtime-cleanup-scope.js";
@@ -435,9 +435,24 @@ async function updateFinalizeCommandInternal(
           pluginUpdate: initialPluginUpdate,
           timeoutMs: lifecycle.budget("targetConfigConvergence"),
         });
-        const resolvedWarnings = await readResolvedDeferredPluginMigrationWarnings(doctorWarnings);
+        // Post-plugin convergence rereads the ledger and reports each still-pending
+        // migration as a plugin warning; that final report supersedes Doctor's.
+        const finallyReportedPluginIds = new Set(
+          (result.pluginUpdate.warnings ?? []).flatMap((warning) =>
+            warning.reason === "doctor-advisory" && warning.pluginId ? [warning.pluginId] : [],
+          ),
+        );
+        const retiredWarnings = await readRetiredDeferredPluginMigrationWarnings(
+          doctorWarnings,
+          finallyReportedPluginIds,
+        );
         phase.assertCurrent();
-        doctorWarnings = doctorWarnings.filter((warning) => !resolvedWarnings.has(warning));
+        if (retiredWarnings.size > 0) {
+          // Earlier Doctor warnings were persisted when reported; retire the ones a
+          // later pass settled or superseded so the run report matches the ledger.
+          doctorWarnings = doctorWarnings.filter((warning) => !retiredWarnings.has(warning));
+          lifecycle.recordWarnings(doctorWarnings);
+        }
         await persistValidatedDowngradeConfig(result.configSnapshot, phase.assertCurrent);
         return result;
       },

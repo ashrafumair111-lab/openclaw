@@ -55,6 +55,14 @@ export const controlUiLocaleConfigHintsChunkPrefix = "locale-config-hints-";
 export function controlUiStableChunkName(id: string): string | undefined {
   const normalized = normalizeModuleId(id);
 
+  if (
+    normalized.startsWith("\0@oxc-project+runtime@") &&
+    normalized.endsWith("/helpers/esm/decorate.js")
+  ) {
+    // Chat and New Session still use decorators; neither route owns their shared helper.
+    return "decorator-runtime";
+  }
+
   switch (controlUiBootManifestKey(id)) {
     case "ui/src/pages/plugins/plugins-page.tsx":
       return "plugins-page";
@@ -76,9 +84,11 @@ export function controlUiStableChunkName(id: string): string | undefined {
     case "ui/src/i18n/locales/en-login.ts":
     case "ui/src/lib/gateway-secret-shape.ts":
       return "login-runtime";
-    case "ui/src/components/sidebar-update-card.ts":
+    case "ui/src/components/sidebar-update-card.tsx":
     case "ui/src/styles/sidebar-update-card.css":
       return "sidebar-update-runtime";
+    case "ui/src/components/markdown-parser.ts":
+      return "markdown-runtime";
     case "ui/src/pages/chat/session-snapshot-database.ts":
       // Warm boot reads while the Gateway connects; the chat boot group made it wait for the whole route.
       return "session-snapshot-database";

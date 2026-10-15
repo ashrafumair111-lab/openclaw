@@ -37,11 +37,18 @@ With config hot reload enabled, changes to `logging.level`, `logging.file`, and
 long-lived channel loggers. Queued records finish writing to their original file.
 Explicit logger-level overrides, such as Baileys verbosity, remain in effect.
 
+Startup guidance to keep local CLI/SDK and Gateway versions aligned uses `info`;
+it does not indicate that a version mismatch was detected. In-memory auth storage
+initialization does not emit synchronous-storage deprecation warnings. Explicit
+calls to deprecated storage APIs still warn with their replacements.
+
 Subsystem file logs omit call-site metadata (`_meta.path`) for `trace`, `debug`,
 `info`, and `warn` records, including `raw()` lines, to avoid capturing and parsing
-a stack on every routine message. `error` and `fatal` records retain it. All levels
-retain call-site metadata while diagnostics are enabled and an internal log-record
-consumer is subscribed, preserving [OTLP code locations](/gateway/opentelemetry/privacy-and-trace-context).
+a stack on every routine message. `error` and `fatal` records retain it. Other than
+`info`, all levels retain call-site metadata while diagnostics are enabled and an
+internal log-record consumer is subscribed, preserving [OTLP code locations](/gateway/opentelemetry/privacy-and-trace-context).
+`info` records, including `raw()` lines, remain stack-free with diagnostic consumers;
+their severity, message, structured attributes, and trace context are still exported.
 This follows diagnostic enablement and subscriptions on the next record, including
 for existing subsystem loggers. Log messages, structured fields, and error stacks
 supplied by callers are unchanged.
@@ -55,13 +62,22 @@ transport failures remain warnings. The existing
 [model transport diagnostic flags](/logging#targeted-model-transport-diagnostics)
 promote transport details to `info` when enabled.
 
-Secret egress forwarding without credential substitution uses `debug`. Refusals
-and credential substitutions remain at `info`, and certificate failures remain
+Successful secret egress forwarding, including credential substitution, uses
+`debug`. Refusals remain at `info`, and certificate failures remain
 warnings. Their structured fields record the proxy outcome without request
 payloads or credentials; see [secret egress proxy](/gateway/secrets/secret-store-and-egress#secret-egress-proxy).
 Code Mode and Tool Search catalog preparation summaries also use `debug`.
 [Prometheus metrics](/gateway/prometheus) count egress outcomes, catalog
 preparations, and model calls independently of log levels.
+
+Per-request GitHub API timing records also use `debug`, including fetches over
+500 ms. Transport failures and rate-limit errors retain their normal handling.
+
+Plugin host cleanup failures during session reset or deletion emit one
+`plugins/cleanup` warning per failure, including the operation, plugin, hook, and
+error. Check the reported cleanup error before retrying. Successful cleanup
+stays quiet, and failures remain best effort. Console diagnostics use the shared
+secret redactor; plain-text console fields are capped at 2,048 characters.
 
 The Control UI Logs tab tails this file via the gateway (`logs.tail`). The CLI does the same:
 
@@ -250,8 +266,24 @@ Diagnostics exports and captured provider/WebSocket console output retain redact
 
 The gateway prints WebSocket protocol logs in two modes:
 
-- **Normal mode (no `--verbose`)**: only "interesting" RPC results print - errors (`ok=false`), slow calls (default threshold: `>= 50ms`), and parse errors.
+- **Normal mode (no `--verbose`)**: failed RPC results (`ok=false`), slow calls (`>= 1,000ms`), and parse errors remain visible at the default log level. Successful responses below one second, including large session lists, log at `debug`. Set `logging.level: "debug"` to retain them in file logs or `logging.consoleLevel: "debug"` to print them.
 - **Verbose mode (`--verbose`)**: prints all WS request/response traffic.
+
+The validated `connect` handshake also participates in the existing Gateway RPC
+metrics as `method="connect"`, including handler duration, first-response latency,
+response bytes, and delivery failures. Handler time includes completion work after
+the hello write; first-response time ends at the transport's write callback, not
+at browser receipt. These are server wall times, including awaited work. A validated connect rejected
+by restart or suspension admission reports a rejected dispatch and its response;
+it has no handler sample because authentication was never entered.
+
+Connect response logs follow the same slow-response threshold and include `authMs`
+(credentials through authentication), `attachMs` (device authorization, identity,
+scopes, and session attachment), `helloMs` (hello payload preparation), and
+`sendMs` (serialization and transport write callback). Unreached phases are absent.
+Bootstrap redemption or admission work between payload preparation and writing
+can make total response time exceed the sum of these fields. No payload fields
+or credentials are included.
 
 With `diagnostics.enabled: true` and warning logging enabled, `sessions.list`
 handlers and `sessions.subscribe` snapshot handlers taking at least one second

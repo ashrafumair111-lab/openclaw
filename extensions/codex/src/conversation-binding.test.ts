@@ -10,14 +10,16 @@ import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
 } from "openclaw/plugin-sdk/runtime-config-snapshot";
-import { patchSessionEntry, upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
+import {
+  deleteSessionEntry,
+  patchSessionEntry,
+  upsertSessionEntry,
+} from "openclaw/plugin-sdk/session-store-runtime";
 import { appendSessionTranscriptMessageByIdentity } from "openclaw/plugin-sdk/session-transcript-runtime";
 import {
   closeOpenClawAgentDatabasesAsync,
   observeHostDataSql,
-  openIncognitoTestActor,
   useSessionStoreTempDirs,
-  withIncognitoSessionActor,
 } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -696,44 +698,27 @@ describe("codex conversation binding", () => {
       sourceSessionKey: "agent:main:dashboard:incognito-source",
       destinationSessionKey: "agent:main:telegram:ordinary-destination",
       ephemeral: true,
-      byIdActor: false,
     },
     {
       label: "an ordinary source bound to an incognito destination",
       sourceSessionKey: "agent:main:telegram:ordinary-source",
       destinationSessionKey: "agent:main:dashboard:incognito-destination",
       ephemeral: false,
-      byIdActor: false,
-    },
-    {
-      label: "a private actor source selected only by physical store and session ID",
-      sourceSessionKey: "agent:main:dashboard:incognito-actor-source",
-      destinationSessionKey: "agent:main:telegram:ordinary-destination",
-      ephemeral: true,
-      byIdActor: true,
     },
   ])(
     "uses the persisted source lifecycle for $label",
-    async ({ sourceSessionKey, destinationSessionKey, ephemeral, byIdActor }) => {
+    async ({ sourceSessionKey, destinationSessionKey, ephemeral }) => {
       const sessionFile = path.join(tempDir, "mixed-source-lifecycle.jsonl");
       const bindingId = "binding-mixed-source-lifecycle";
-      const authority = { assertCurrent() {} };
-      const actor = byIdActor
-        ? await openIncognitoTestActor({ OPENCLAW_STATE_DIR: tempDir }, authority)
-        : undefined;
-      const storePath = actor?.path ?? path.join(tempDir, "mixed-source-lifecycle.sqlite");
+      const storePath = path.join(tempDir, "mixed-source-lifecycle.sqlite");
       try {
         const entry = { sessionId: "source-mixed-lifecycle", updatedAt: Date.now() };
-        if (actor) {
-          await actor.sessions.create(authority, { sessionKey: sourceSessionKey, entry });
-        } else {
-          await upsertSessionEntry({
-            agentId: "main",
-            sessionKey: sourceSessionKey,
-            storePath,
-            entry,
-          });
-        }
+        await upsertSessionEntry({
+          agentId: "main",
+          sessionKey: sourceSessionKey,
+          storePath,
+          entry,
+        });
         const operations: Array<{ method: string; params: Record<string, unknown> }> = [];
         const notificationHandlers = new Set<(notification: unknown) => void>();
         const client = {
@@ -789,7 +774,7 @@ describe("codex conversation binding", () => {
             agentId: "main",
             sessionId: "source-mixed-lifecycle",
             threadId: "thread-source-mixed-lifecycle",
-            ...(byIdActor ? {} : { sessionKey: sourceSessionKey }),
+            sessionKey: sourceSessionKey,
             storePath,
           },
           start: { id: "start-mixed-source-lifecycle" },
@@ -800,11 +785,9 @@ describe("codex conversation binding", () => {
           handleCodexConversationInboundClaim(event, ctx, {
             config: { session: { store: path.join(tempDir, "unrelated-session.sqlite") } },
           });
-        const sql = actor ? observeHostDataSql() : undefined;
+        const sql = ephemeral ? observeHostDataSql() : undefined;
         try {
-          await expect(
-            actor ? withIncognitoSessionActor(actor, run) : run(),
-          ).resolves.toMatchObject({
+          await expect(run()).resolves.toMatchObject({
             handled: true,
             reply: {
               text: "Bound reply",
@@ -841,7 +824,6 @@ describe("codex conversation binding", () => {
           ).resolves.toBe(true);
         }
 
-        await actor?.close();
         await denyConversationBinding(data);
 
         expect(operations.at(-1)).toEqual({
@@ -852,7 +834,7 @@ describe("codex conversation binding", () => {
           testCodexAppServerBindingStore.read({ kind: "conversation", bindingId }),
         ).toBeUndefined();
       } finally {
-        await actor?.close();
+        await deleteSessionEntry({ agentId: "main", sessionKey: sourceSessionKey, storePath });
       }
     },
   );
@@ -941,6 +923,7 @@ describe("codex conversation binding", () => {
 
   it("starts a fresh proxy-backed thread when binding an explicit app-server thread id", async () => {
     const sessionFile = path.join(tempDir, "session.jsonl");
+    const agentDir = path.join(tempDir, "agents", "bot-a", "agent");
     const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
     sharedClientMocks.getSharedCodexAppServerClient.mockResolvedValue({
       request: vi.fn(async (method: string, requestParams: Record<string, unknown>) => {
@@ -957,6 +940,7 @@ describe("codex conversation binding", () => {
       sessionFile,
       threadId: "thread-old",
       workspaceDir: tempDir,
+      agentDir,
       model: "gpt-5.4-mini",
       modelProvider: "openai",
     });
@@ -966,6 +950,9 @@ describe("codex conversation binding", () => {
     expect(requests[0]?.params).not.toHaveProperty("permissions");
     expect(requests[0]?.params).not.toHaveProperty("sandbox");
     expect(requests[0]?.params.config).toMatchObject(NETWORK_PROXY_CONFIG_PATCH);
+    expect(sharedClientMocks.getSharedCodexAppServerClient).toHaveBeenCalledWith(
+      expect.objectContaining({ agentDir }),
+    );
     const bindingAfterStart = await readTestConversationBinding(sessionFile);
     expect(bindingAfterStart?.threadId).toBe("thread-new");
     expect(bindingAfterStart?.networkProxyProfileName).toBe(NETWORK_PROXY_PROFILE_NAME);
@@ -1364,33 +1351,6 @@ describe("codex conversation binding", () => {
     },
   );
 
-  it("stores and uses the owning agent dir for bound app-server sessions", async () => {
-    const sessionFile = path.join(tempDir, "session.jsonl");
-    const agentDir = path.join(tempDir, "agents", "bot-a", "agent");
-    sharedClientMocks.getSharedCodexAppServerClient.mockResolvedValue({
-      request: vi.fn(async () => ({
-        thread: { id: "thread-new", sessionId: "session-1", cwd: tempDir },
-        model: "gpt-5.4-mini",
-      })),
-    });
-
-    await prepareTestConversationBinding({
-      sessionFile,
-      workspaceDir: tempDir,
-      agentDir,
-      model: "gpt-5.4-mini",
-    });
-
-    const sharedClientParams = mockCallArg(sharedClientMocks.getSharedCodexAppServerClient) as {
-      agentDir?: unknown;
-    };
-    expect(sharedClientParams?.agentDir).toBe(agentDir);
-    await expect(readTestConversationBinding(sessionFile)).resolves.toMatchObject({
-      threadId: "thread-new",
-      clientId: "test-client",
-    });
-  });
-
   it("rejects binding when the binding agent exec auto mode may need unrouted approvals", async () => {
     const sessionFile = path.join(tempDir, "session.jsonl");
     const request = vi.fn();
@@ -1471,7 +1431,7 @@ describe("codex conversation binding", () => {
         async () => undefined,
       );
     }
-    expect(releaseEvicted).toHaveBeenCalledExactlyOnceWith("thread-evicted");
+    expect(releaseEvicted).toHaveBeenCalledExactlyOnceWith("thread-evicted", undefined, undefined);
     sharedClientMocks.retainSharedCodexAppServerClientByInstanceId.mockReturnValue({
       client,
       release: vi.fn(),

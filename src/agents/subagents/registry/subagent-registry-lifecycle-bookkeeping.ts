@@ -12,10 +12,7 @@ import type {
   CleanupBookkeepingParams,
   SubagentLifecycleWakeContext,
 } from "./subagent-registry-lifecycle-context.js";
-import {
-  buildSafeLifecycleErrorMeta,
-  maskLifecycleIdentifier,
-} from "./subagent-registry-lifecycle-log.js";
+import { buildSafeLifecycleErrorMeta } from "./subagent-registry-lifecycle-log.js";
 import { commitSubagentLifecycleMutation } from "./subagent-registry-lifecycle-persistence.js";
 import { scheduleRequesterSettleWake } from "./subagent-registry-lifecycle-wake.js";
 import { getCurrentSubagentRunOwner, subagentRuns } from "./subagent-registry-memory.js";
@@ -94,8 +91,8 @@ export async function completeCleanupBookkeeping(
             params.warn("failed to retire subagent bundle MCP runtime", {
               error: buildSafeLifecycleErrorMeta(error),
               sessionId,
-              runId: maskLifecycleIdentifier(cleanupParams.runId, "run"),
-              childSessionKey: maskLifecycleIdentifier(entry.childSessionKey, "session"),
+              runId: cleanupParams.runId,
+              childSessionKey: entry.childSessionKey,
             });
           },
         }),
@@ -157,7 +154,7 @@ export async function completeCleanupBookkeeping(
           (draft.endedReason === SUBAGENT_ENDED_REASON_KILLED &&
             draft.suppressAnnounceReason !== "killed"));
       retireImmediately = retireAfterSettle && cleanupParams.skipRequesterSettleWake === true;
-      cleanupParams.discardDelivery?.(draft);
+      cleanupParams.finalizeDelivery?.(draft);
       if (!retireImmediately) {
         draft.cleanupCompletedAt = cleanupParams.completedAt;
         if (suppressSessionEffects) {

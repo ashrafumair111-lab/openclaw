@@ -58,7 +58,7 @@ describe("shared control ownership", () => {
     expect(matchingFiles(/<[a-z][^>]*\srole=["'](?:combobox|listbox|option)["']/u)).toEqual([
       "components/command-palette-view.ts",
       "components/multi-select.ts",
-      "components/select-picker.ts",
+      "components/select-picker-view.ts",
       "pages/chat/components/chat-composer-menu.ts",
       "pages/chat/components/chat-model-account-control.ts",
       "pages/chat/components/chat-model-picker-options.ts",
