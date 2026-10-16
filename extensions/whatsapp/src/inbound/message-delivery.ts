@@ -17,10 +17,8 @@ import { raceWithTimeout } from "openclaw/plugin-sdk/time-runtime";
 import { maybeResolveWhatsAppApprovalReaction } from "../approval-reactions.js";
 import { resolveComparableIdentity } from "../identity.js";
 import { addWhatsAppImagePreviewFields } from "../image-preview.js";
-import { maybeResolveWhatsAppQuestionReaction } from "../question-reactions.js";
 import { cacheInboundMessageMeta } from "../quoted-message.js";
 import { formatError } from "../session.js";
-import { requireWhatsAppInboundAdmission } from "./admission.js";
 import {
   createWhatsAppDurableInboundQueue,
   createWhatsAppDurableInboundMessageId,
@@ -368,7 +366,7 @@ export function createWhatsAppMessageDeliveryCoordinator(options: WhatsAppMessag
       receiveOrder: durable.receiveOrder,
     };
     if (inboundMessage.event.id) {
-      const admission = requireWhatsAppInboundAdmission(inboundMessage);
+      const admission = inboundMessage.admission;
       cacheInboundMessageMeta(
         admission.accountId,
         inboundMessage.platform.chatJid,
@@ -428,18 +426,6 @@ export function createWhatsAppMessageDeliveryCoordinator(options: WhatsAppMessag
     }
     const inbound = prepared ?? (await normalizeInboundMessage(msg));
     if (!inbound) {
-      return "completed";
-    }
-    if (
-      await maybeResolveWhatsAppQuestionReaction({
-        cfg: options.loadConfig?.() ?? options.cfg,
-        accountId: options.accountId,
-        msg,
-        senderId: inbound.senderE164 ?? inbound.from,
-        resolveReactionTargetJids,
-        logDebug: (message) => logWhatsAppVerbose(options.verbose, message),
-      })
-    ) {
       return "completed";
     }
     const readReceipt = buildReadReceiptTarget(inbound);

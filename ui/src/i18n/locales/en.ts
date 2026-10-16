@@ -1781,6 +1781,7 @@ export const en: TranslationMap & {
     plugins: "Plugins",
     skillWorkshop: "Skill workshop",
     devices: "Devices",
+    claws: "Claws",
     cloudWorkers: "Cloud environments",
     chat: "Chat",
     dashboards: "Dashboards",
@@ -1829,6 +1830,7 @@ export const en: TranslationMap & {
     plugins: "Extend your Claw with tools",
     skillWorkshop: "Skills your agent learned, recent changes, and undo.",
     devices: "Paired devices, pairing approvals, and exec bindings.",
+    claws: "Explore and add official Claws.",
     cloudWorkers: "Repository snapshots and machines for cloud sessions.",
     chat: "Gateway chat for quick interventions.",
     dashboards: "Tasks with saved dashboards.",
@@ -2753,6 +2755,7 @@ export const en: TranslationMap & {
   login: {},
   chat: {
     sessionDetails: {
+      menu: "Session details",
       title: "Details",
       close: "Close details",
       session: "Session details",
@@ -2890,8 +2893,11 @@ export const en: TranslationMap & {
       preparingCloudEnvironment: "Preparing cloud environment…",
       savingSnapshot: "Saving snapshot…",
       preparingContext: "Preparing this turn…",
+      waitingForTurn: "Waiting for turn to start…",
       memoryFlushing: "Saving conversation memory…",
       startingModel: "Waiting for a response",
+      waitingForLocalModel: "Waiting for the local model to respond",
+      waitingForModelSlot: "Waiting for a free model slot",
       waitingForState: "Temporarily busy—retrying…",
     },
     archivedSessionDisabled: "This session is archived. Unarchive it to continue the conversation.",
@@ -3341,8 +3347,11 @@ export const en: TranslationMap & {
     incognitoExpiredBody:
       "Incognito sessions last for 24 hours or until the Gateway restarts. Your unsent input stays in this tab.",
     newIncognitoSession: "New Incognito session",
-    restartRecoveryTitle: "This session ended during a restart.",
-    restartRecoveryDisabled: "Its transcript is safe.",
+    restartRecoveryTitle: "This task was interrupted by a restart.",
+    restartRecoveryDisabled: "Your transcript is safe. Resume to continue in this session.",
+    restartRecoveryNewSession:
+      "This provider cannot safely resume tool work here. Your transcript can continue in a new session.",
+    resumeSession: "Resume",
     resumeInNewSession: "Resume in new session",
     resumingSession: "Resuming…",
     systemNotice: {
@@ -3378,7 +3387,11 @@ export const en: TranslationMap & {
       claudeCliTaskNotification: {
         label: "System · background task",
       },
+      pluginSteering: {
+        label: "{plugin} guidance",
+      },
       showContent: "Show content",
+      hideContent: "Hide content",
     },
     skillLearned: {
       label: "Learned",
@@ -3722,6 +3735,8 @@ export const en: TranslationMap & {
       dockRight: "Move side panel right",
       dockBottom: "Move side panel below",
       conversation: "Chat",
+      showChat: "Show this conversation",
+      hideChat: "Hide this conversation",
       conversationEmpty: "The conversation for this task.",
       minimize: "Minimize side panel",
       resize: "Resize side panel",
@@ -3951,6 +3966,8 @@ export const en: TranslationMap & {
         "No transcription provider is configured for dictation. Choose one in Settings to dictate.",
       realtimeTalkCancellationRejected: "Realtime output cancellation was not accepted.",
       realtimeTalkMissingTurnIdentity: "Realtime output is missing its turn identity.",
+      realtimeTalkRelayUnresponsive:
+        "Talk ended because the Gateway has not acknowledged microphone audio for 30 seconds. Check the connection and start Talk again.",
       realtimeTalkRequiresMicrophone: "Realtime voice input requires browser microphone access.",
       selectedMicrophoneUnavailable:
         "The selected microphone is unavailable. Choose another input or System default.",

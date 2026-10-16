@@ -13,6 +13,7 @@ import {
   readClawOrphanWorkspaceInDatabase,
   readClawPackageRefsInDatabase,
 } from "../claws/provenance-read.kernel.js";
+import { readClawStateCommandInDatabase } from "../claws/state-read.kernel.js";
 import {
   isCronStateReadCommand,
   readCronStateCommandInDatabase,
@@ -32,7 +33,6 @@ import {
   lookupCronStandingGrantInDatabase,
 } from "../gateway/operator-approval-standing-grants.worker.js";
 import {
-  hasDueOperatorApprovalsInDatabase,
   readOperatorApprovalReplayInDatabase,
   readPendingOperatorApprovalsInDatabase,
   listTerminalOperatorApprovalsInDatabase,
@@ -72,6 +72,8 @@ import {
   pluginBlobLookupInDatabase,
   pluginBlobEntriesInDatabase,
 } from "../plugin-state/plugin-blob-store.sqlite.js";
+import { isPluginStateReadCommand } from "../plugin-state/plugin-state-worker-contract.js";
+import { readPluginStateCommand } from "../plugin-state/plugin-state.worker.js";
 import {
   selectSkillLibraryRevisionMetadataBatch,
   selectSkillLibraryRevisionManifestsBatch,
@@ -136,6 +138,9 @@ export function readOpenClawStateDatabaseCommand(
   >,
   metadataRead: ReturnType<typeof prepareAcpSessionMetadataRead> | undefined,
 ): OpenClawStateReadResult {
+  if (command.type === "claws.inventory") {
+    return readClawStateCommandInDatabase(db, command);
+  }
   if (command.type === "claws.packageOwnership") {
     const install =
       command.agentId === undefined
@@ -226,6 +231,9 @@ export function readOpenClawStateDatabaseCommand(
     command.type === "devicePairing.bootstrapContext"
   ) {
     return executeDevicePairingRead(db, input.databasePath, command);
+  }
+  if (isPluginStateReadCommand(command)) {
+    return readPluginStateCommand({ db, path: input.databasePath }, command);
   }
   if (command.type === "pluginBlob.lookup") {
     return {
@@ -323,9 +331,6 @@ export function readOpenClawStateDatabaseCommand(
       type: command.type,
       pending: readPendingOperatorApprovalsInDatabase(command.input, db),
     };
-  }
-  if (command.type === "operatorApprovals.hasDue") {
-    return { type: command.type, hasDue: hasDueOperatorApprovalsInDatabase(command.nowMs, db) };
   }
   if (command.type === "operatorApprovals.prepareReplay") {
     return { type: command.type, replay: readOperatorApprovalReplayInDatabase(command.input, db) };
