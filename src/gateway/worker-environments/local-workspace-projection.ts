@@ -15,13 +15,14 @@ import { retainPreparedSessionEntryPredicate } from "../../config/sessions/sessi
 import { withSessionEntryReadOnlyInWorker } from "../../config/sessions/session-entry-read-runtime.js";
 import { captureSessionEntryMetadataRead } from "../../config/sessions/session-entry-source-authority.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { observeDiagnosticsTimelinePhases } from "../../infra/diagnostics-timeline.js";
 import { isPathInside } from "../../infra/path-guards.js";
 import { registerOpenClawAgentDatabaseAsyncResource } from "../../state/openclaw-agent-db-resources.js";
 import { executeExistingOpenClawStateRead } from "../../state/openclaw-state-db-readonly.js";
 import { projectionOperations } from "./local-workspace-state.js";
 import { withLocalWorkspaceStore, type LocalWorkspaceStore } from "./local-workspace-store.js";
 import type { LocalWorkspaceOwner } from "./local-workspace-types.js";
-import { OVERSIZED_WORKSPACE_FILE_ERROR_PREFIX } from "./workspace-manifest-comparison.js";
+import { workspaceSizeRecoveryPaths } from "./workspace-manifest-comparison.js";
 import { isLocalWorkspaceBaseRefreshRef } from "./workspace-result-inventory.js";
 
 type LocalWorkspaceCustody = {
@@ -281,6 +282,68 @@ export async function withSettledLocalWorkspacePath<T>(
     : await operation();
 }
 
+/** An unchanged turn needs no filesystem effects and can leave its runtimes running. */
+export function reuseLocalWorkspaceProjection(owner: LocalWorkspaceOwner, signal?: AbortSignal) {
+  return withLocalWorkspaceStore(
+    { ...owner, worktreeId: owner.worktree.id, signal },
+    async (store) => {
+      using phases = observeDiagnosticsTimelinePhases(
+        "attempt.setup.sandbox.workspace_selection.reuse.reconcile",
+      );
+      try {
+        let row = store.get();
+        if (
+          row?.baseline_ref &&
+          row.tree_root_digest &&
+          row.lifecycle_revision === owner.lifecycleRevision &&
+          !row.pending_ref &&
+          !row.journal_json &&
+          !row.paused_runtimes_json
+        ) {
+          // Bind this row to the session before probing. The lease and observation
+          // receipts preserve that binding; every store call rechecks live authority.
+          projectionOperations(owner, store, row).current();
+          for (const target of ["canonical", "projection"] as const) {
+            const selected = row;
+            const snapshot = await timeWorktreePreparationPhase(
+              target === "canonical" ? "synchronizeCanonical" : "synchronizeProjection",
+              async () => {
+                try {
+                  // A probe never prepares changed packs or repairs a baseline.
+                  // Live writers can interrupt discovery; retry after pausing.
+                  return await store.manifest(selected, {
+                    kind: "probe",
+                    target,
+                    canonicalRoot: owner.worktree.path,
+                  });
+                } catch {
+                  store.signal.throwIfAborted();
+                  store.assertCurrent();
+                  return undefined;
+                }
+              },
+            );
+            store.assertCurrent();
+            if (snapshot?.kind !== "scan" || snapshot.resultingRoot !== snapshot.previousRoot) {
+              break;
+            }
+            // Acceptance failures must propagate, never retry an uncertain write.
+            if (snapshot.observation) {
+              row = await store.accept(snapshot.observation, owner.workerAuthority);
+            }
+            if (target === "projection") {
+              return row.projection_path;
+            }
+          }
+        }
+        return await runLocalWorkspaceProjection(owner, store, (state) => state.reuse());
+      } finally {
+        phases.mark("attempt.setup.sandbox.workspace_selection.reuse.release");
+      }
+    },
+  );
+}
+
 /** Every operation owns the same renewable, cross-process reconciliation lease. */
 export async function withLocalWorkspaceProjection<T>(
   owner: LocalWorkspaceOwner,
@@ -345,7 +408,7 @@ async function runLocalWorkspaceProjection<T>(
   try {
     return await run(operations, quiescence);
   } catch (error) {
-    if (error instanceof Error && error.message.startsWith(OVERSIZED_WORKSPACE_FILE_ERROR_PREFIX)) {
+    if (error instanceof Error && workspaceSizeRecoveryPaths(error).length > 0) {
       const { describeLocalWorkspaceRecovery } = await import("./local-workspace-recovery.js");
       throw await describeLocalWorkspaceRecovery(error, owner, operations);
     }

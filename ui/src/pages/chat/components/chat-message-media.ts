@@ -17,6 +17,7 @@ import {
   labelForMediaPath,
 } from "../../../lib/media-file-extension.ts";
 import { isCrossOriginHttpSource } from "./chat-attachment-href.ts";
+import type { WorkspaceFileSearchTarget } from "./chat-message-media-actions.ts";
 
 registerChatComposerEnglish();
 
@@ -32,17 +33,6 @@ export type ImageBlock = {
   width?: number;
   height?: number;
 } & ({ url: string; artifactId?: string } | { url?: undefined; artifactId: string });
-
-/** Native admission and open actions shared with non-preview catalog rows. */
-export type MessageMediaAction = {
-  onOpen?: () => void;
-  onRetry?: () => void;
-  onAllow?: () => void;
-  onFocus?: () => void;
-  observeElement?: (element: Element | undefined) => void;
-  pending: boolean;
-  reason?: string;
-};
 
 export type ArtifactDownloadResolver = (
   params: {
@@ -77,6 +67,8 @@ export type ImageRenderOptions = {
   onMediaChange?: () => void;
   onRequestOpenImage?: () => number;
   onOpenImage?: (item: ImageLightboxItem, requestVersion?: number) => void;
+  /** Filename query only; the Files owner selects and authorizes any eventual file. */
+  onFindWorkspaceFile?: (target: WorkspaceFileSearchTarget) => void;
   resolveArtifactDownload?: ArtifactDownloadResolver;
 };
 
@@ -110,6 +102,7 @@ export type ProjectedMessageContent =
   | AssistantAttachmentItem;
 
 type ChatMediaResourceKind =
+  | "comment-preview"
   | "assistant-attachment"
   | "managed-image"
   | "managed-media"
@@ -191,8 +184,7 @@ function detachChatMediaResourceSubscriber(
   const resourceKey = chatMediaResourceKey(resource.kind, resource.cacheKey);
   if (chatMediaResources.get(resourceKey) === resource) {
     chatMediaResources.delete(resourceKey);
-    // Virtual rows release every subscriber while offscreen. Keep only settled
-    // successes so remounts reuse their signed URL without retaining failed work.
+    // Offscreen virtual rows retain only settled, reusable resources.
     if (
       resource.retainUntil !== undefined &&
       resource.retainUntil > Date.now() &&
@@ -390,12 +382,11 @@ export function trimManagedImageMissResources() {
 
 export function readManagedImageBlobUrl(cacheKey: string): string | undefined {
   const cached = managedImageBlobUrls.get(cacheKey);
-  if (!cached) {
-    return undefined;
+  if (cached) {
+    managedImageBlobUrls.delete(cacheKey);
+    managedImageBlobUrls.set(cacheKey, cached);
   }
-  managedImageBlobUrls.delete(cacheKey);
-  managedImageBlobUrls.set(cacheKey, cached);
-  return cached.url;
+  return cached?.url;
 }
 
 export function readManagedImageBlob(cacheKey: string): Blob | undefined {
